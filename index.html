@@ -626,7 +626,10 @@ function openBill(table, isQuick){
   var ex  = OPEN[key];
   if (ex) {
     CUR = { key:key, table: ex.table || table, guests: Number(ex.guests)||0, openedAt: ex.openedAt || localStamp(),
-            discount: Number(ex.discount)||0, note: ex.note||'', lines: linesToArr(ex.lines), _pushed:true };
+            discount: Number(ex.discount)||0, note: ex.note||'', lines: linesToArr(ex.lines), _pushed:true,
+            segments: (ex.segments ? (Array.isArray(ex.segments) ? ex.segments : Object.keys(ex.segments).map(function(k){ return ex.segments[k]; })) : []),
+            baseGuests: Number(ex.baseGuests) || 0,
+            mergedFrom: ex.mergedFrom ? String(ex.mergedFrom).split(', ') : [] };
     enterBill();
   } else {
     var od = ORD[key];
@@ -665,11 +668,16 @@ function renderBillHead(){
     '<span class="chip" style="font-size:19px">โต๊ะ ' + esc(CUR.table) + '</span>' +
     '<button class="chip g" id="guestChip">👥 ' + (CUR.guests || '-') + ' คน</button>' +
     '<span class="muted">เปิดบิล ' + hhmm(CUR.openedAt) + ' · ' + minsSince(CUR.openedAt) + ' นาที</span>' +
-    '<button class="btn o sm" id="parkBtn">💾 พักบิลไว้</button>' +
     '<button class="btn o sm" id="mergeBtn">🔀 รวมบิล</button>' +
     '<button class="btn d sm" id="voidBtn" style="margin-left:auto">ยกเลิกบิล</button>';
-  $('backBtn').onclick = function(){ saveOpen(true); CUR = null; showView('tables'); };
-  $('parkBtn').onclick = parkBill;
+  /* ออกจากบิล = บันทึกอัตโนมัติ + ปิดสัญญาณเรียกเช็คบิลของโต๊ะนี้ (มาดูแล้ว) */
+  $('backBtn').onclick = function(){
+    var k = CUR.key, hadCall = !!(CALLS && CALLS[k]);
+    saveOpen(true);
+    if (hadCall) db.ref(BASE + 'billing_requests/' + k).remove().catch(function(){});
+    CUR = null; showView('tables');
+    if (hadCall) toast('ปิดสัญญาณเรียกเช็คบิลแล้ว · บิลยังเปิดค้างอยู่');
+  };
   $('mergeBtn').onclick = openMerge;
   $('guestChip').onclick = function(){
     askGuests(CUR.table, false, function(g){ if (g === null) return; CUR.guests = g; renderBillHead(); saveOpen(); });
@@ -678,16 +686,6 @@ function renderBillHead(){
     if (!confirm('ยกเลิกบิลโต๊ะ ' + CUR.table + ' ?\nรายการทั้งหมดจะหาย และโต๊ะจะกลับมาว่าง')) return;
     voidCurrentBill();
   };
-}
-
-/* ---------- พักบิล (เก็บไว้ก่อน ยังไม่เก็บเงิน) ---------- */
-function parkBill(){
-  if (!CUR) return;
-  saveOpen(true);
-  db.ref(BASE + 'billing_requests/' + CUR.key).remove().catch(function(){});
-  var tb = CUR.table;
-  CUR = null; showView('tables');
-  toast('พักบิลโต๊ะ ' + tb + ' ไว้แล้ว · สั่งเพิ่มได้เรื่อยๆ');
 }
 
 /* ---------- รวมบิล (ลูกค้าเลี้ยงอีกโต๊ะ) ----------
@@ -732,6 +730,12 @@ function doMerge(k){
     CUR.lines.push(l);
     mergeSameLine(CUR.lines.length - 1);
   });
+  /* จำว่าแต่ละโต๊ะนั่งกี่คน / กินเท่าไหร่ → รีพอร์ตจะแยกนับโต๊ะได้ */
+  if (!CUR.segments || !CUR.segments.length) CUR.baseGuests = Number(CUR.guests) || 0;
+  CUR.segments = (CUR.segments || []).concat([{
+    table: String(srcTable), guests: Number(o.guests) || 0,
+    amount: openTotal(o), qty: src.reduce(function(a, l){ return a + l.qty; }, 0)
+  }]);
   CUR.guests = (Number(CUR.guests) || 0) + (Number(o.guests) || 0);
   CUR.discount = (Number(CUR.discount) || 0) + (Number(o.discount) || 0);
   CUR.mergedFrom = (CUR.mergedFrom || []).concat([String(srcTable)]);
@@ -1019,6 +1023,7 @@ function saveOpen(immediate){
   var obj = { table: CUR.table, guests: CUR.guests || 0, openedAt: CUR.openedAt, discount: CUR.discount || 0,
               note: CUR.note || '', staff: STAFF || '', updatedAt: localStamp(), lines: {} };
   if (CUR.mergedFrom && CUR.mergedFrom.length) obj.mergedFrom = CUR.mergedFrom.join(', ');
+  if (CUR.segments && CUR.segments.length) { obj.segments = CUR.segments; obj.baseGuests = Number(CUR.baseGuests) || 0; }
   CUR.lines.forEach(function(l){ obj.lines[l.uid] = { id:l.id, name:l.name, price:l.price, qty:l.qty, away: !!l.away }; });
   CUR._pushed = true;
   var key = CUR.key;
@@ -1186,6 +1191,18 @@ function closeBill(t){
     staff: STAFF || '', note: CUR.note || '', date: dateStr
   };
   if (CUR.mergedFrom && CUR.mergedFrom.length) bill.mergedFrom = CUR.mergedFrom.join(', ');
+  /* บิลรวม: แนบส่วนแบ่งรายโต๊ะไว้ ให้รีพอร์ตนับแยกโต๊ะได้ */
+  if (CUR.segments && CUR.segments.length) {
+    var segA = 0, segQ = 0, segG = 0;
+    CUR.segments.forEach(function(g){ segA += Number(g.amount) || 0; segQ += Number(g.qty) || 0; segG += Number(g.guests) || 0; });
+    var hostA = Math.max(0, Math.round((t.total - segA) * 100) / 100);
+    var hostQ = Math.max(0, t.qty - segQ);
+    var hostG = Number(CUR.baseGuests) || Math.max(0, (Number(CUR.guests) || 0) - segG);
+    bill.segments = [{ table: String(CUR.table), guests: hostG, amount: hostA, qty: hostQ }]
+      .concat(CUR.segments.map(function(g){
+        return { table: String(g.table), guests: Number(g.guests) || 0, amount: Number(g.amount) || 0, qty: Number(g.qty) || 0 };
+      }));
+  }
   var openKey = CUR.key;
 
   /* ออฟไลน์: เก็บบิลลงเครื่องก่อน แล้วค่อยส่งขึ้น Firebase ตอนเน็ตกลับ */
