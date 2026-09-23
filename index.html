@@ -44,6 +44,9 @@ input,select{font-family:inherit;font-size:16px}
 .tbtn.call{background:#fff4d9;border-color:#C98A25;animation:blink 1.4s infinite}
 .tbtn.ord{background:#eaf3f1;border-color:#0F6B5C}
 .tbtn.ord .sub{color:#0F6B5C}
+.tbtn.away{background:#fff3e0;border-color:#E67E22;font-size:16px}
+.tbtn.away .sub{color:#b85f0c}
+.tbtn .aw{font-size:12px;font-weight:700;color:#b85f0c;background:#ffe2bd;border-radius:6px;padding:1px 6px}
 #lockScr{position:fixed;inset:0;background:#0F6B5C;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
 #lockScr .box{background:#fff;border-radius:16px;padding:26px 22px;max-width:360px;width:100%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.3)}
 #lockScr h2{margin:0 0 6px}
@@ -185,7 +188,6 @@ table.t td.r,table.t th.r{text-align:right}
   <div class="card">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <h2 style="margin:0">เลือกโต๊ะเพื่อเก็บเงิน</h2>
-      <button class="btn w sm" id="quickBill">+ บิลด่วน (ซื้อกลับ/ไม่ระบุโต๊ะ)</button>
       <div id="liveSum" class="muted" style="margin-left:auto"></div>
     </div>
     <div id="tableGrid"></div>
@@ -613,9 +615,36 @@ function minsSince(ts){
   var d = parseTs(ts); if (!d) return 0;
   return Math.max(0, Math.round((Date.now() - d.getTime())/60000));
 }
+/* ---------- ของกลับบ้าน/เดลิเวอรี่ จากเครื่องรับออเดอร์ ---------- */
+var AWAY_PFX = ['กลับบ้าน'];   // แกรป/ช็อปปี้/ไลน์แมน รับเงินคนละทาง — ไม่ขึ้นปุ่มในเครื่องเก็บเงิน
+function isAwayName(n){ n = String(n == null ? '' : n).trim(); return AWAY_PFX.some(function(p){ return n.indexOf(p) === 0; }); }
+// ออเดอร์กลับบ้านที่เลขตรงกับโต๊ะ t (เช่น "กลับบ้าน 5" ↔ โต๊ะ 5) ยกเว้นที่รวมเข้าบิลไปแล้ว (skip)
+function awayFor(t, skip){
+  var r = [];
+  Object.keys(ORD).forEach(function(k){
+    var od = ORD[k]; if (!od || (skip && skip[k]) || !isAwayName(od.table)) return;
+    var m = xcMatchTable(od.table, t);
+    if (m && m !== 'dine') r.push({ key:k, name:od.table, qty:od.qty });
+  });
+  return r;
+}
+var LINK_NO = {};
+function offerLinkAway(){
+  if (!CUR || CUR._moving || isAwayName(CUR.table)) return;
+  var have = {}; (CUR.linked || []).forEach(function(n){ have[fbKeySafe(n)] = 1; });
+  var c = awayFor(CUR.table, have).filter(function(x){ return !OPEN[x.key] && !LINK_NO[CUR.key + '|' + x.key]; });
+  if (!c.length) return;
+  var q = 0, names = c.map(function(x){ q += x.qty; return x.name; }).join(', ');
+  if (confirm('เครื่องรับออเดอร์มี "' + names + '" (' + q + ' ถุง)\nเป็นของกลับบ้านของโต๊ะ ' + CUR.table + ' ใช่ไหม?\n\nตกลง = รวมเข้าบิลโต๊ะนี้ (จ่ายพร้อมกัน)\nยกเลิก = เป็นคนละคน แยกบิลกลับบ้านต่างหาก')) {
+    CUR.linked = (CUR.linked || []).concat(c.map(function(x){ return x.name; }));
+    saveOpen(true); toast('รวมของกลับบ้านเข้าบิลโต๊ะ ' + CUR.table + ' แล้ว');
+  } else c.forEach(function(x){ LINK_NO[CUR.key + '|' + x.key] = 1; });
+}
 function renderTables(){
   var g = $('tableGrid'); if (!g) return;
   var h = '', openCount = 0, openAmt = 0;
+  var linkedSet = {};
+  Object.keys(OPEN).forEach(function(k){ String((OPEN[k] || {}).linked || '').split(', ').forEach(function(n){ if (n) linkedSet[fbKeySafe(n)] = 1; }); });
   // โต๊ะตัวเลข
   for (var i = 1; i <= CFG.tables; i++) {
     var t = String(i), k = fbKeySafe(t), o = OPEN[k];
@@ -632,13 +661,31 @@ function renderTables(){
       sub = (called ? 'เรียกเช็คบิล · ' : 'ไม่ว่าง · ') +
             (GUESTS[k] ? GUESTS[k] + ' คน · ' : '') + od.qty + ' จาน · ' + minsSince(od.first) + ' นาที';
     } else if (called) { cls = 'tbtn call'; sub = 'เรียกเช็คบิล'; }
+    var aw = awayFor(t, linkedSet), awQ = 0; aw.forEach(function(x){ awQ += x.qty; });
+    var awBadge = aw.length ? '<span class="aw">🏠 มีกลับบ้าน ' + awQ + ' ถุง</span>' : '';
     h += '<button class="' + cls + '" data-t="' + esc(t) + '">' + esc(t) +
          (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') +
-         (amt ? '<span class="amt">' + amt + '</span>' : '') + '</button>';
+         (amt ? '<span class="amt">' + amt + '</span>' : '') + awBadge + '</button>';
+  }
+  // ปุ่มกลับบ้าน/เดลิเวอรี่ — ขึ้นทุกชื่อที่มีในเครื่องรับออเดอร์ จนกว่าจะปิดบิล
+  var awayKeys = {};
+  Object.keys(ORD).forEach(function(k){ if (isAwayName(ORD[k].table)) awayKeys[k] = ORD[k].table; });
+  Object.keys(OPEN).forEach(function(k){ if (isAwayName(OPEN[k].table)) awayKeys[k] = OPEN[k].table; });
+  var ak = Object.keys(awayKeys).filter(function(k){ return !linkedSet[k]; });
+  if (ak.length) {
+    h += '<div style="grid-column:1/-1;font-weight:700;margin-top:6px">🏠 กลับบ้าน <span class="muted">(จากเครื่องรับออเดอร์)</span></div>';
+    ak.forEach(function(k){
+      var o = OPEN[k], od = ORD[k], nm = awayKeys[k], sub = '', amt = '';
+      if (o) { openCount++; openAmt += openTotal(o); sub = minsSince(o.openedAt) + ' นาที'; amt = baht(openTotal(o)); }
+      else if (od) sub = 'ยังไม่คิดเงิน · ' + od.qty + ' ถุง · ' + minsSince(od.first) + ' นาที';
+      h += '<button class="tbtn ' + (o ? 'ord' : 'away') + '" data-t="' + esc(nm) + '">🏠 ' + esc(nm) +
+           (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + (amt ? '<span class="amt">' + amt + '</span>' : '') + '</button>';
+    });
   }
   // บิลด่วนที่เปิดค้างไว้ (คีย์ไม่ใช่ตัวเลข)
   Object.keys(OPEN).forEach(function(k){
     if (/^\d+$/.test(k) && Number(k) <= CFG.tables) return;
+    if (isAwayName(OPEN[k].table)) return;
     var o = OPEN[k]; openCount++; openAmt += openTotal(o);
     h += '<button class="tbtn ord" data-t="' + esc(o.table || k) + '" style="font-size:15px">' + esc(o.table || k) +
          '<span class="sub">' + minsSince(o.openedAt) + ' นาที</span><span class="amt">' + baht(openTotal(o)) + '</span></button>';
@@ -649,11 +696,6 @@ function renderTables(){
 }
 setInterval(function(){ if (!$('v-tables').classList.contains('hidden')) renderTables(); }, 30000);
 
-$('quickBill').onclick = function(){
-  var n = 1;
-  while (OPEN[fbKeySafe('ด่วน ' + n)]) n++;
-  openBill('ด่วน ' + n, true);
-};
 
 /* ---------- open / edit bill ---------- */
 function openBill(table, isQuick){
@@ -664,7 +706,8 @@ function openBill(table, isQuick){
             discount: Number(ex.discount)||0, note: ex.note||'', lines: linesToArr(ex.lines), _pushed:true,
             segments: (ex.segments ? (Array.isArray(ex.segments) ? ex.segments : Object.keys(ex.segments).map(function(k){ return ex.segments[k]; })) : []),
             baseGuests: Number(ex.baseGuests) || 0,
-            mergedFrom: ex.mergedFrom ? String(ex.mergedFrom).split(', ') : [] };
+            mergedFrom: ex.mergedFrom ? String(ex.mergedFrom).split(', ') : [],
+            linked: ex.linked ? String(ex.linked).split(', ') : [] };
     if (CUR.segments.length && !CUR.baseGuests) {
       askGuests(CUR.table, !!isQuick, function(g){
         if (g === null) { CUR = null; return; }
@@ -677,6 +720,10 @@ function openBill(table, isQuick){
     enterBill();
   } else {
     var od = ORD[key];
+    if (isAwayName(table)) {   // กลับบ้าน/เดลิเวอรี่: ไม่ถามจำนวนคน
+      CUR = { key:key, table:table, guests:0, openedAt:(od && od.first) ? od.first : localStamp(), discount:0, note:'', lines:[], _pushed:false, linked:[] };
+      enterBill(); saveOpen(); return;
+    }
     var gAuto = Number(GUESTS[key]) || 0;
     var openedAt = (od && od.first) ? od.first : localStamp();   // นับเวลาตั้งแต่ออเดอร์แรก
     if (gAuto > 0) {
@@ -703,9 +750,10 @@ function linesToArr(l){
   }).filter(function(x){ return x.qty > 0; });
 }
 function enterBill(){
-  MULT = 1; AWAY = false;
+  MULT = 1; AWAY = !!(CUR && isAwayName(CUR.table));
   showView('bill');
   renderBillHead(); renderTiles(); renderLines(); loadCrossCheck();
+  setTimeout(offerLinkAway, 150);
 }
 function renderBillHead(){
   if (!CUR) return;
@@ -713,7 +761,7 @@ function renderBillHead(){
   var ownGuests = hasMerged ? Number(CUR.baseGuests) || 0 : Number(CUR.guests) || 0;
   $('billHead').innerHTML =
     '<button class="btn o" id="backBtn">← ผังโต๊ะ</button>' +
-    '<span class="chip" style="font-size:19px">โต๊ะ ' + esc(CUR.table) + '</span>' +
+    '<span class="chip" style="font-size:19px">' + (isAwayName(CUR.table) ? '🏠 ' : 'โต๊ะ ') + esc(CUR.table) + '</span>' +
     '<button class="chip g" id="guestChip">👥 ' + (ownGuests || '-') + (hasMerged ? ' คนโต๊ะนี้' : ' คน') + '</button>' +
     '<span class="muted">เปิดบิล ' + hhmm(CUR.openedAt) + ' · ' + minsSince(CUR.openedAt) + ' นาที</span>' +
     '<button class="btn o sm" id="mergeBtn">🔀 ย้ายบิลไปโต๊ะอื่น</button>' +
@@ -1177,6 +1225,7 @@ function saveOpen(immediate){
     obj.lines[l.uid] = { id:l.id, name:l.name, price:l.price, qty:l.qty, away: !!l.away };
     if (l.mergedTable) obj.lines[l.uid].mergedTable = String(l.mergedTable);
   });
+  if (CUR.linked && CUR.linked.length) obj.linked = CUR.linked.join(', ');
   CUR._pushed = true;
   var key = CUR.key;
   clearTimeout(SAVE_T);
@@ -1356,6 +1405,8 @@ function closeBill(t){
         return { table: String(g.table), guests: Number(g.guests) || 0, amount: Number(g.amount) || 0, qty: Number(g.qty) || 0 };
       }));
   }
+  var linked = (CUR.linked || []).slice();
+  if (linked.length) bill.linkedTakeaway = linked.join(', ');
   var openKey = CUR.key;
 
   /* ออฟไลน์: เก็บบิลลงเครื่องก่อน แล้วค่อยส่งขึ้น Firebase ตอนเน็ตกลับ */
@@ -1368,6 +1419,7 @@ function closeBill(t){
     outboxAdd({ _oid: 'ob' + Date.now() + Math.random().toString(36).slice(2, 6),
                 date: dateStr, openKey: openKey, bill: bill });
     db.ref(POS + '/lastClosed/' + openKey).set(bill.closedAt).catch(function(){});
+    linked.forEach(function(n){ db.ref(POS + '/lastClosed/' + fbKeySafe(n)).set(bill.closedAt).catch(function(){}); });
     rOpen.child(openKey).remove().catch(function(){});
     CUR = null; showView('tables');
     toast('เก็บไว้ในเครื่องแล้ว ' + baht(bill.total) + ' · จะส่งขึ้นระบบตอนเน็ตมา');
@@ -1381,6 +1433,7 @@ function closeBill(t){
       var updates = {};
       updates[POS + '/open/' + openKey] = null;
       updates[POS + '/lastClosed/' + openKey] = bill.closedAt;
+      linked.forEach(function(n){ updates[POS + '/lastClosed/' + fbKeySafe(n)] = bill.closedAt; });
       updates[BASE + 'billing_requests/' + openKey] = null;
       return db.ref().update(updates);
     }).then(function(){
