@@ -323,6 +323,8 @@ function $(id){ return document.getElementById(id); }
 function pad2(n){ return n < 10 ? '0' + n : '' + n; }
 function localDateStr(d){ d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate()); }
 function localStamp(d){ d = d || new Date(); return localDateStr(d) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
+// เวลาจบรอบต้องละเอียดพอสำหรับโต๊ะที่รับลูกค้ารอบใหม่ทันที
+function seatingCloseStamp(){ var d = new Date(); return localStamp(d) + '.' + ('00' + d.getMilliseconds()).slice(-3); }
 function hhmm(s){ var d = parseTs(s); return d ? pad2(d.getHours()) + ':' + pad2(d.getMinutes()) : '-'; }
 function parseTs(s){
   if (!s) return null;
@@ -470,7 +472,7 @@ rOpen.on('value', function(s){
   OPEN = s.val() || {};
   renderTables();
   // ถ้ากำลังเปิดบิลอยู่ แล้วอีกเครื่องปิดบิลนั้นไปแล้ว → เตือน
-  if (CUR && CUR.key && !OPEN[CUR.key] && CUR._pushed) {
+  if (CUR && CUR.key && !OPEN[CUR.key] && CUR._pushed && !CUR._moving) {
     toast('บิลนี้ถูกปิดจากเครื่องอื่นแล้ว');
     CUR = null; showView('tables');
   }
@@ -486,7 +488,27 @@ db.ref(BASE + 'menuPrices').on('value', function(s){ PRICES = s.val() || {}; });
 /* ---------- เชื่อมกับระบบรับออเดอร์: โต๊ะไหนมีออเดอร์ = ไม่ว่าง ---------- */
 var ORD = {};    // tableKey -> { qty, first, table }
 var LASTC = {};  // tableKey -> เวลาปิดบิลล่าสุด
-var PEND = {}, DONE = {}, GUESTS = {};
+var PEND = {}, DONE = {}, GUESTS = {}, GUEST_DATA = {};
+
+function activeGuestCount(records, closedAt){
+  if (!records || typeof records !== 'object') return 0;
+  var list = records.count !== undefined ? [records] : Object.keys(records).map(function(k){ return records[k]; });
+  var closed = parseTs(closedAt), best = null;
+  list.forEach(function(r){
+    if (!r || !(Number(r.count) > 0)) return;
+    var start = parseTs(r.startTs || r.updatedAt || r.lastTs);
+    if (Object.prototype.hasOwnProperty.call(r, 'afterClosedAt')) {
+      if (r.afterClosedAt !== (closedAt || '')) return;
+    } else if (closed && (!start || start <= closed)) return;
+    var ts = parseTs(r.lastTs || r.startTs || r.updatedAt);
+    if (!best || (ts && (!best.ts || ts > best.ts))) best = { ts:ts, count:Number(r.count) || 0 };
+  });
+  return best ? best.count : 0;
+}
+function refreshGuestCounts(){
+  GUESTS = {};
+  Object.keys(GUEST_DATA || {}).forEach(function(k){ GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k]); });
+}
 
 function computeOrd(){
   ORD = {};
@@ -513,7 +535,7 @@ function computeOrd(){
   renderTables();
 }
 
-db.ref(POS + '/lastClosed').on('value', function(s){ LASTC = s.val() || {}; computeOrd(); });
+db.ref(POS + '/lastClosed').on('value', function(s){ LASTC = s.val() || {}; refreshGuestCounts(); computeOrd(); });
 db.ref(BASE + 'orders').on('value', function(s){ PEND = s.val() || {}; computeOrd(); });
 
 var _coRef = null, _coDate = '', _gRef = null, _gDate = '';
@@ -530,19 +552,9 @@ function watchToday(){
     _gDate = d;
     _gRef = db.ref(BASE + 'guestCounts/' + d);
     _gRef.on('value', function(s){
-      var v = s.val() || {}; GUESTS = {};
-      Object.keys(v).forEach(function(k){
-        var n = v[k]; if (!n || typeof n !== 'object') return;
-        if (n.count !== undefined) { GUESTS[k] = Number(n.count) || 0; return; }
-        var best = null;
-        Object.keys(n).forEach(function(sid){
-          var r = n[sid] || {}; var ts = parseTs(r.lastTs || r.startTs);
-          if (!best || (ts && best.ts && ts > best.ts) || (ts && !best.ts)) best = { ts: ts, c: Number(r.count) || 0 };
-        });
-        if (best) GUESTS[k] = best.c;
-      });
+      GUEST_DATA = s.val() || {}; refreshGuestCounts();
       renderTables();
-    }, function(){ GUESTS = {}; });
+    }, function(){ GUEST_DATA = {}; GUESTS = {}; });
   }
 }
 watchToday();
@@ -630,6 +642,15 @@ function openBill(table, isQuick){
             segments: (ex.segments ? (Array.isArray(ex.segments) ? ex.segments : Object.keys(ex.segments).map(function(k){ return ex.segments[k]; })) : []),
             baseGuests: Number(ex.baseGuests) || 0,
             mergedFrom: ex.mergedFrom ? String(ex.mergedFrom).split(', ') : [] };
+    if (CUR.segments.length && !CUR.baseGuests) {
+      askGuests(CUR.table, !!isQuick, function(g){
+        if (g === null) { CUR = null; return; }
+        CUR.baseGuests = g;
+        CUR.guests = g + CUR.segments.reduce(function(n, s){ return n + (Number(s.guests) || 0); }, 0);
+        enterBill(); saveOpen();
+      });
+      return;
+    }
     enterBill();
   } else {
     var od = ORD[key];
@@ -653,7 +674,9 @@ function linesToArr(l){
   if (!l) return [];
   return Object.keys(l).map(function(k){
     var o = l[k] || {};
-    return { uid:k, id:o.id||'', name:o.name||'', price:Number(o.price)||0, qty:Number(o.qty)||0, away:!!o.away };
+    var line = { uid:k, id:o.id||'', name:o.name||'', price:Number(o.price)||0, qty:Number(o.qty)||0, away:!!o.away };
+    if (o.mergedTable) line.mergedTable = String(o.mergedTable);
+    return line;
   }).filter(function(x){ return x.qty > 0; });
 }
 function enterBill(){
@@ -663,12 +686,14 @@ function enterBill(){
 }
 function renderBillHead(){
   if (!CUR) return;
+  var hasMerged = !!(CUR.segments && CUR.segments.length);
+  var ownGuests = hasMerged ? Number(CUR.baseGuests) || 0 : Number(CUR.guests) || 0;
   $('billHead').innerHTML =
     '<button class="btn o" id="backBtn">← ผังโต๊ะ</button>' +
     '<span class="chip" style="font-size:19px">โต๊ะ ' + esc(CUR.table) + '</span>' +
-    '<button class="chip g" id="guestChip">👥 ' + (CUR.guests || '-') + ' คน</button>' +
+    '<button class="chip g" id="guestChip">👥 ' + (ownGuests || '-') + (hasMerged ? ' คนโต๊ะนี้' : ' คน') + '</button>' +
     '<span class="muted">เปิดบิล ' + hhmm(CUR.openedAt) + ' · ' + minsSince(CUR.openedAt) + ' นาที</span>' +
-    '<button class="btn o sm" id="mergeBtn">🔀 รวมบิล</button>' +
+    '<button class="btn o sm" id="mergeBtn">🔀 ย้ายบิลไปโต๊ะอื่น</button>' +
     '<button class="btn d sm" id="voidBtn" style="margin-left:auto">ยกเลิกบิล</button>';
   /* ออกจากบิล = บันทึกอัตโนมัติ + ปิดสัญญาณเรียกเช็คบิลของโต๊ะนี้ (มาดูแล้ว) */
   $('backBtn').onclick = function(){
@@ -680,7 +705,14 @@ function renderBillHead(){
   };
   $('mergeBtn').onclick = openMerge;
   $('guestChip').onclick = function(){
-    askGuests(CUR.table, false, function(g){ if (g === null) return; CUR.guests = g; renderBillHead(); saveOpen(); });
+    askGuests(CUR.table, false, function(g){
+      if (g === null) return;
+      if (CUR.segments && CUR.segments.length) {
+        CUR.baseGuests = g;
+        CUR.guests = g + CUR.segments.reduce(function(n, s){ return n + (Number(s.guests) || 0); }, 0);
+      } else CUR.guests = g;
+      renderBillHead(); renderSumBar(); saveOpen();
+    });
   };
   $('voidBtn').onclick = function(){
     if (!confirm('ยกเลิกบิลโต๊ะ ' + CUR.table + ' ?\nรายการทั้งหมดจะหาย และโต๊ะจะกลับมาว่าง')) return;
@@ -689,70 +721,118 @@ function renderBillHead(){
 }
 
 /* ---------- รวมบิล (ลูกค้าเลี้ยงอีกโต๊ะ) ----------
-   ย้ายรายการของอีกโต๊ะมารวมในบิลนี้ → ปิดทีเดียว ใบเดียว
-   สรุปยอด/รีพอร์ตไม่เพี้ยน เพราะนับจากบิลที่ปิดแล้วเท่านั้น */
+   โต๊ะที่กำลังนับจาน = ต้นทาง → ฝากยอดไว้ที่โต๊ะผู้จ่าย แล้วคืนต้นทางให้ว่าง
+   ยังไม่ลงยอดรับเงิน; ใช้ segments รูปแบบเดิมเพื่อให้รายงานแยกแต่ละโต๊ะได้ */
 function openMerge(){
-  if (!CUR) return;
-  var keys = Object.keys(OPEN || {}).filter(function(k){ return k !== CUR.key; });
-  var host = $('modalHost');
-  var rows = '';
-  keys.forEach(function(k){
-    var o = OPEN[k] || {};
-    var tot = openTotal(o), n = 0;
-    Object.keys(o.lines || {}).forEach(function(u){ n += Number((o.lines[u] || {}).qty) || 0; });
-    rows += '<button class="mergeRow" data-mk="' + esc(k) + '"><b>โต๊ะ ' + esc(o.table || k) + '</b>' +
-            '<span class="muted">' + n + ' หน่วย</span>' +
-            '<span class="mt">' + baht(tot) + '</span></button>';
+  if (!CUR || CUR._moving) return;
+  if (!ONLINE) { toast('ต้องเชื่อมต่ออินเทอร์เน็ตก่อนย้ายบิล'); return; }
+  if (!CUR.lines.length) { toast('นับจานของโต๊ะนี้ก่อนย้ายบิล'); return; }
+  var choices = {};
+  for (var i = 1; i <= CFG.tables; i++) choices[String(i)] = String(i);
+  Object.keys(ORD || {}).forEach(function(k){ choices[k] = ORD[k].table || k; });
+  Object.keys(OPEN || {}).forEach(function(k){ choices[k] = OPEN[k].table || k; });
+  delete choices[CUR.key];
+  var host = $('modalHost'), rows = '';
+  Object.keys(choices).forEach(function(k){
+    var o = OPEN[k];
+    rows += '<button class="mergeRow" data-mk="' + esc(k) + '" data-mt="' + esc(choices[k]) + '"><b>โต๊ะ ' + esc(choices[k]) + '</b>' +
+            '<span class="muted">' + (o ? 'มีบิลค้าง' : (ORD[k] ? 'ยังไม่ได้นับจาน' : 'ยังไม่เปิดบิล')) + '</span>' +
+            '<span class="mt">' + (o ? baht(openTotal(o)) : '') + '</span></button>';
   });
-  if (!rows) rows = '<div class="muted">ตอนนี้ไม่มีโต๊ะอื่นที่เปิดบิลอยู่</div>';
   host.innerHTML =
    '<div class="mask"><div class="modal">' +
-   '<h3>รวมบิลเข้ากับโต๊ะ ' + esc(CUR.table) + '</h3>' +
-   '<div class="muted" style="margin-bottom:10px">เลือกโต๊ะที่จะเอามารวม — รายการทั้งหมดจะย้ายมาบิลนี้ แล้วโต๊ะนั้นจะว่าง</div>' +
-   rows +
+   '<h3>ย้ายบิลโต๊ะ ' + esc(CUR.table) + ' ไปให้โต๊ะไหนจ่าย?</h3>' +
+   '<div class="muted" style="margin-bottom:10px">ยอดโต๊ะนี้ ' + baht(totals().total) + ' จะไปค้างที่โต๊ะที่เลือก · โต๊ะ ' + esc(CUR.table) + ' จะว่าง · ยังไม่รับเงิน</div>' +
+   (rows || '<div class="muted">ไม่มีโต๊ะปลายทาง</div>') +
    '<div style="display:flex;gap:8px;margin-top:12px"><button class="btn o" id="mgCancel" style="flex:1">ปิด</button></div>' +
    '</div></div>';
   $('mgCancel').onclick = function(){ host.innerHTML = ''; };
   host.querySelectorAll('[data-mk]').forEach(function(b){
-    b.onclick = function(){ host.innerHTML = ''; doMerge(b.dataset.mk); };
+    b.onclick = function(){ host.innerHTML = ''; doMerge(b.dataset.mk, b.dataset.mt); };
   });
 }
-function doMerge(k){
-  var o = OPEN[k]; if (!o || !CUR) return;
-  var srcTable = o.table || k;
-  var src = [];
-  Object.keys(o.lines || {}).forEach(function(u){
-    var l = o.lines[u] || {};
-    src.push({ uid: uid(), id: l.id || '', name: l.name || '', price: Number(l.price) || 0, qty: Number(l.qty) || 0, away: !!l.away });
+
+// เก็บรูปแบบบิลเดิม เพิ่มเพียงที่มาของรายการที่ฝากไว้เพื่อไม่ให้นับจานทับกัน
+function mergeOpenRecord(b){
+  var o = { table:b.table, guests:Number(b.guests)||0, openedAt:b.openedAt,
+    discount:Number(b.discount)||0, note:b.note||'', staff:STAFF||'', updatedAt:localStamp(), lines:{} };
+  (b.lines || []).forEach(function(l){
+    o.lines[l.uid] = { id:l.id, name:l.name, price:l.price, qty:l.qty, away:!!l.away };
+    if (l.mergedTable) o.lines[l.uid].mergedTable = String(l.mergedTable);
   });
-  if (!confirm('ย้ายรายการของ โต๊ะ ' + srcTable + ' (' + baht(openTotal(o)) + ')\nมารวมกับโต๊ะ ' + CUR.table + ' ?\n\nโต๊ะ ' + srcTable + ' จะว่างทันที')) return;
-  src.forEach(function(l){
-    CUR.lines.push(l);
-    mergeSameLine(CUR.lines.length - 1);
-  });
-  /* จำว่าแต่ละโต๊ะนั่งกี่คน / กินเท่าไหร่ → รีพอร์ตจะแยกนับโต๊ะได้ */
-  if (!CUR.segments || !CUR.segments.length) CUR.baseGuests = Number(CUR.guests) || 0;
-  CUR.segments = (CUR.segments || []).concat([{
-    table: String(srcTable), guests: Number(o.guests) || 0,
-    amount: openTotal(o), qty: src.reduce(function(a, l){ return a + l.qty; }, 0)
-  }]);
-  CUR.guests = (Number(CUR.guests) || 0) + (Number(o.guests) || 0);
-  CUR.discount = (Number(CUR.discount) || 0) + (Number(o.discount) || 0);
-  CUR.mergedFrom = (CUR.mergedFrom || []).concat([String(srcTable)]);
-  var extra = 'รวมบิลโต๊ะ ' + srcTable;
-  CUR.note = CUR.note ? (CUR.note + ' | ' + extra) : extra;
-  saveOpen(true);
-  var dateStr = localDateStr();
-  db.ref(POS + '/merges/' + dateStr).push({
-    fromTable: String(srcTable), toTable: String(CUR.table),
-    amount: openTotal(o), qty: src.reduce(function(a, l){ return a + l.qty; }, 0),
-    staff: STAFF || '', at: localStamp()
-  }).catch(function(){});
-  db.ref(POS + '/lastClosed/' + k).set(localStamp()).catch(function(){});
-  db.ref(BASE + 'billing_requests/' + k).remove().catch(function(){});
-  rOpen.child(k).remove().catch(function(){});
-  renderBillHead(); renderLines(); loadCrossCheck();
-  toast('รวมบิลโต๊ะ ' + srcTable + ' เข้ามาแล้ว');
+  if (b.segments && b.segments.length) { o.segments = b.segments; o.baseGuests = Number(b.baseGuests)||0; }
+  if (b.mergedFrom && b.mergedFrom.length) o.mergedFrom = b.mergedFrom.join(', ');
+  return o;
+}
+function mergeSegments(b){
+  var parts = b.segments ? (Array.isArray(b.segments) ? b.segments.slice() : Object.keys(b.segments).map(function(k){ return b.segments[k]; })) : [];
+  var amount = openTotal(b), qty = 0, guests = Number(b.guests)||0;
+  Object.keys(b.lines || {}).forEach(function(k){ qty += Number(b.lines[k].qty)||0; });
+  parts.forEach(function(p){ amount -= Number(p.amount)||0; qty -= Number(p.qty)||0; guests -= Number(p.guests)||0; });
+  return [{ table:String(b.table), guests:Math.max(0, guests), amount:Math.round(amount*100)/100, qty:Math.max(0, qty) }].concat(parts);
+}
+async function doMerge(k, tableName){
+  if (!CUR || CUR._moving || k === CUR.key) return;
+  if (!ONLINE) { toast('ต้องเชื่อมต่ออินเทอร์เน็ตก่อนย้ายบิล'); return; }
+  if (!CUR.lines.length) { toast('นับจานของโต๊ะนี้ก่อนย้ายบิล'); return; }
+  var source = CUR, targetName = String(tableName || (OPEN[k] && OPEN[k].table) || k);
+  if (!confirm('ย้ายยอดโต๊ะ ' + source.table + ' (' + baht(totals().total) + ')\nไปให้โต๊ะ ' + targetName + ' จ่ายทีหลัง?\n\nโต๊ะ ' + source.table + ' จะว่างทันที · ยังไม่รับเงิน')) return;
+  var expectedClosed = LASTC[k] || '';
+  source._moving = true;
+  clearTimeout(SAVE_T); // ยกเลิกการบันทึกที่รออยู่ ไม่ให้สร้างบิลต้นทางกลับมาหลังย้าย
+  $('modalHost').innerHTML = '<div class="mask"><div class="modal"><h3>กำลังย้ายยอดไปโต๊ะ ' + esc(targetName) + '…</h3><div class="muted">รอให้บันทึกสำเร็จก่อน</div></div></div>';
+  try {
+    var src = mergeOpenRecord(source);
+    await rOpen.child(source.key).set(src); // ถ้าย้ายไม่สำเร็จ ยอดต้นทางยังอยู่ครบ
+    source._pushed = true;
+    var snaps = await Promise.all([
+      rOpen.child(k).once('value'),
+      db.ref(POS + '/lastClosed/' + k).once('value'),
+      db.ref(BASE + 'guestCounts/' + localDateStr() + '/' + k).once('value')
+    ]);
+    if (!ONLINE) throw new Error('การเชื่อมต่อขาด กรุณาลองใหม่เมื่อออนไลน์');
+    if ((snaps[1].val() || '') !== expectedClosed) throw new Error('โต๊ะปลายทางเพิ่งจบรอบ กรุณาตรวจสอบโต๊ะแล้วเลือกใหม่');
+    var dest = snaps[0].val();
+    if (!dest) {
+      var od = ORD[k];
+      dest = { table:targetName, guests:activeGuestCount(snaps[2].val(), snaps[1].val()),
+        openedAt:(od && od.first) || localStamp(), discount:0, note:'', lines:{} };
+    }
+    var parts = dest.segments ? (Array.isArray(dest.segments) ? dest.segments.slice() : Object.keys(dest.segments).map(function(u){ return dest.segments[u]; })) : [];
+    dest.baseGuests = parts.length ? (Number(dest.baseGuests)||0) : (Number(dest.guests)||0);
+    dest.segments = parts.concat(mergeSegments(src));
+    dest.guests = (Number(dest.guests)||0) + (Number(src.guests)||0);
+    dest.discount = (Number(dest.discount)||0) + (Number(src.discount)||0);
+    dest.lines = dest.lines || {};
+    Object.keys(src.lines).forEach(function(u){
+      var l = src.lines[u], id = uid();
+      while (dest.lines[id]) id = uid();
+      dest.lines[id] = { id:l.id, name:l.name, price:l.price, qty:l.qty, away:!!l.away,
+        mergedTable:l.mergedTable || String(src.table) };
+    });
+    var from = dest.mergedFrom ? String(dest.mergedFrom).split(', ') : [];
+    dest.mergedFrom = from.concat([String(src.table)], source.mergedFrom || []).join(', ');
+    var note = 'รวมบิลโต๊ะ ' + src.table + (src.note ? ' (' + src.note + ')' : '');
+    dest.note = dest.note ? dest.note + ' | ' + note : note;
+    dest.staff = STAFF || ''; dest.updatedAt = localStamp();
+    var stamp = seatingCloseStamp(), updates = {};
+    updates[POS + '/open/' + k] = dest;
+    updates[POS + '/open/' + source.key] = null;
+    updates[POS + '/lastClosed/' + source.key] = stamp;
+    updates[BASE + 'billing_requests/' + source.key] = null;
+    var logKey = db.ref(POS + '/merges/' + localDateStr()).push().key;
+    updates[POS + '/merges/' + localDateStr() + '/' + logKey] = {
+      fromTable:String(src.table), toTable:String(dest.table), amount:openTotal(src),
+      qty:source.lines.reduce(function(n, l){ return n + l.qty; }, 0), staff:STAFF||'', at:stamp
+    };
+    await db.ref().update(updates); // ย้ายยอดและคืนโต๊ะพร้อมกัน ไม่มีการลบยอดก่อนปลายทางบันทึกสำเร็จ
+    CUR = null; $('modalHost').innerHTML = ''; showView('tables');
+    toast('ย้ายยอดโต๊ะ ' + src.table + ' ไปโต๊ะ ' + dest.table + ' แล้ว · ยังไม่รับเงิน');
+  } catch (e) {
+    source._moving = false;
+    $('modalHost').innerHTML = '';
+    toast('ย้ายบิลไม่สำเร็จ: ' + e.message);
+  }
 }
 
 /* ---------- ยกเลิกบิล + บันทึกหลักกาน ----------
@@ -871,7 +951,7 @@ function renderTiles(){
 function paintTileBadges(){
   var el = $('tiles'); if (!el) return;
   var cnt = {};
-  if (CUR) CUR.lines.forEach(function(l){ cnt[l.id] = (cnt[l.id] || 0) + l.qty; });
+  if (CUR) CUR.lines.forEach(function(l){ if (!l.mergedTable) cnt[l.id] = (cnt[l.id] || 0) + l.qty; });
   el.querySelectorAll('[data-badge]').forEach(function(sp){
     var n = cnt[sp.dataset.badge] || 0;
     sp.textContent = n ? ('×' + n) : '';
@@ -886,7 +966,7 @@ function addLine(id){
   CAT.forEach(function(x){ if (x.id === id) c = x; });
   if (!c) return;
   var found = null;
-  CUR.lines.forEach(function(l){ if (l.id === id && !!l.away === AWAY && l.price === c.price) found = l; });
+  CUR.lines.forEach(function(l){ if (!l.mergedTable && l.id === id && !!l.away === AWAY && l.price === c.price) found = l; });
   if (found) found.qty += MULT;
   else CUR.lines.push({ uid:uid(), id:c.id, name:c.name, price:c.price, qty:MULT, away:AWAY });
   renderLines(); saveOpen();
@@ -920,7 +1000,7 @@ function mergeSameLine(idx){
   var l = CUR.lines[idx];
   var hit = -1;
   CUR.lines.forEach(function(o, i){
-    if (i !== idx && o.id === l.id && o.price === l.price && !!o.away === !!l.away) hit = i;
+    if (i !== idx && !o.mergedTable && !l.mergedTable && o.id === l.id && o.price === l.price && !!o.away === !!l.away) hit = i;
   });
   if (hit >= 0) { CUR.lines[hit].qty += l.qty; CUR.lines.splice(idx, 1); }
 }
@@ -962,7 +1042,18 @@ function totals(){
 function renderLines(){
   if (!CUR) return;
   var el = $('lines'), h = '';
+  if (CUR.segments && CUR.segments.length) {
+    h += '<div class="muted" style="padding:10px 0">ยอดฝากที่นับแล้ว: ' + CUR.segments.map(function(s){
+      return 'โต๊ะ ' + esc(s.table) + ' ' + baht(s.amount);
+    }).join(' · ') + '<br>กดนับเพิ่มเฉพาะจานของโต๊ะ ' + esc(CUR.table) + ' · รายการฝากแยกไว้ด้านล่าง</div>';
+  }
   CUR.lines.forEach(function(l){
+    if (l.mergedTable) {
+      h += '<div class="ln' + (l.away ? ' away' : '') + '"><span class="q">' + l.qty + '</span>' +
+        '<span class="nm">' + esc(l.name) + (l.away ? '<span class="tagaway">กลับบ้าน</span>' : '') +
+        '<small>ฝากจากโต๊ะ ' + esc(l.mergedTable) + ' · นับแล้ว</small></span><span class="tot">' + baht(l.price*l.qty) + '</span></div>';
+      return;
+    }
     h += '<div class="ln' + (l.away ? ' away' : '') + '">' +
          '<button class="qb" data-m="' + l.uid + '">−</button>' +
          '<button class="q" data-q="' + l.uid + '" title="กดเพื่อพิมพ์จำนวน">' + l.qty + '</button>' +
@@ -1019,12 +1110,15 @@ function askDiscount(){
 
 /* ---------- save open bill ---------- */
 function saveOpen(immediate){
-  if (!CUR) return;
+  if (!CUR || CUR._moving) return;
   var obj = { table: CUR.table, guests: CUR.guests || 0, openedAt: CUR.openedAt, discount: CUR.discount || 0,
               note: CUR.note || '', staff: STAFF || '', updatedAt: localStamp(), lines: {} };
   if (CUR.mergedFrom && CUR.mergedFrom.length) obj.mergedFrom = CUR.mergedFrom.join(', ');
   if (CUR.segments && CUR.segments.length) { obj.segments = CUR.segments; obj.baseGuests = Number(CUR.baseGuests) || 0; }
-  CUR.lines.forEach(function(l){ obj.lines[l.uid] = { id:l.id, name:l.name, price:l.price, qty:l.qty, away: !!l.away }; });
+  CUR.lines.forEach(function(l){
+    obj.lines[l.uid] = { id:l.id, name:l.name, price:l.price, qty:l.qty, away: !!l.away };
+    if (l.mergedTable) obj.lines[l.uid].mergedTable = String(l.mergedTable);
+  });
   CUR._pushed = true;
   var key = CUR.key;
   clearTimeout(SAVE_T);
@@ -1178,10 +1272,11 @@ function openPay(){
 }
 
 function closeBill(t){
+  clearTimeout(SAVE_T); // ไม่ให้บิลที่เพิ่งปิดถูกบันทึกกลับจากตัวหน่วงนับจาน
   var dateStr = localDateStr();
   var bill = {
     table: CUR.table, guests: CUR.guests || 0,
-    openedAt: CUR.openedAt, closedAt: localStamp(),
+    openedAt: CUR.openedAt, closedAt: seatingCloseStamp(),
     minutes: minsSince(CUR.openedAt),
     items: CUR.lines.map(function(l){ return { name:l.name, price:l.price, qty:l.qty, away: !!l.away, id:l.id }; }),
     qty: t.qty, subtotal: t.sub, discount: t.disc, total: t.total,
@@ -1214,6 +1309,7 @@ function closeBill(t){
     bill.offline = true;
     outboxAdd({ _oid: 'ob' + Date.now() + Math.random().toString(36).slice(2, 6),
                 date: dateStr, openKey: openKey, bill: bill });
+    db.ref(POS + '/lastClosed/' + openKey).set(bill.closedAt).catch(function(){});
     rOpen.child(openKey).remove().catch(function(){});
     CUR = null; showView('tables');
     toast('เก็บไว้ในเครื่องแล้ว ' + baht(bill.total) + ' · จะส่งขึ้นระบบตอนเน็ตมา');
@@ -1224,10 +1320,12 @@ function closeBill(t){
   rCount.child(dateStr).transaction(function(c){ return (c || 0) + 1; }, function(err, committed, snap){
     bill.billNo = dateStr.replace(/-/g, '').slice(2) + '-' + pad2((snap && snap.val()) || 1);
     rBills.child(dateStr).push(bill).then(function(){
-      return rOpen.child(openKey).remove();
+      var updates = {};
+      updates[POS + '/open/' + openKey] = null;
+      updates[POS + '/lastClosed/' + openKey] = bill.closedAt;
+      updates[BASE + 'billing_requests/' + openKey] = null;
+      return db.ref().update(updates);
     }).then(function(){
-      db.ref(POS + '/lastClosed/' + openKey).set(bill.closedAt).catch(function(){});
-      db.ref(BASE + 'billing_requests/' + openKey).remove().catch(function(){});
       CUR = null; showView('tables'); toast('ปิดบิลแล้ว ' + baht(bill.total));
       showReceipt(bill);
     }).catch(function(e){ alert('บันทึกบิลไม่สำเร็จ: ' + e.message + '\nกรุณาลองใหม่'); });
