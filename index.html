@@ -695,13 +695,22 @@ function renderBillHead(){
     '<span class="muted">เปิดบิล ' + hhmm(CUR.openedAt) + ' · ' + minsSince(CUR.openedAt) + ' นาที</span>' +
     '<button class="btn o sm" id="mergeBtn">🔀 ย้ายบิลไปโต๊ะอื่น</button>' +
     '<button class="btn d sm" id="voidBtn" style="margin-left:auto">ยกเลิกบิล</button>';
-  /* ออกจากบิล = บันทึกอัตโนมัติ + ปิดสัญญาณเรียกเช็คบิลของโต๊ะนี้ (มาดูแล้ว) */
+  /* ออกจากบิล = บันทึกอัตโนมัติ + ปิดสัญญาณเรียกเช็คบิลของโต๊ะนี้ (มาดูแล้ว)
+     ถ้าบิลยังไม่มีรายการอะไรเลย (แค่เข้ามาดู/ลูกค้าเปลี่ยนใจยังไม่จ่าย) ห้ามค้างสถานะ
+     "กำลังเก็บเงิน" (สีเขียว) ไว้ที่โต๊ะ ให้ลบ entry ทิ้งแล้วกลับไปเป็นสถานะเดิมของโต๊ะ */
   $('backBtn').onclick = function(){
     var k = CUR.key, hadCall = !!(CALLS && CALLS[k]);
-    saveOpen(true);
+    var hasItems = !!(CUR.lines && CUR.lines.length);
+    if (hasItems) {
+      saveOpen(true);
+    } else {
+      clearTimeout(SAVE_T);
+      rOpen.child(k).remove().catch(function(){});
+      delete OPEN[k];
+    }
     if (hadCall) db.ref(BASE + 'billing_requests/' + k).remove().catch(function(){});
-    CUR = null; showView('tables');
-    if (hadCall) toast('ปิดสัญญาณเรียกเช็คบิลแล้ว · บิลยังเปิดค้างอยู่');
+    CUR = null; showView('tables'); renderTables();
+    if (hadCall) toast('ปิดสัญญาณเรียกเช็คบิลแล้ว' + (hasItems ? ' · บิลยังเปิดค้างอยู่' : ''));
   };
   $('mergeBtn').onclick = openMerge;
   $('guestChip').onclick = function(){
@@ -979,21 +988,47 @@ function changeQty(u, d){
   if (CUR.lines[idx].qty <= 0) CUR.lines.splice(idx, 1);
   renderLines(); saveOpen();
 }
-/* กดที่ตัวเลข → พิมพ์จำนวนใหม่ได้เลย (ใส่ 0 = ลบรายการ) */
+/* กดที่ตัวเลข → พิมพ์จำนวนใหม่ได้เลย (ใส่ 0 = ลบรายการ)
+   ใช้กล่องกรอกของตัวเอง (ไม่ใช่ prompt ของเบราว์เซอร์) เพื่อบังคับให้ขึ้นแป้นตัวเลขล้วน */
 function setQty(u){
   if (!CUR) return;
   var idx = -1;
   CUR.lines.forEach(function(l, i){ if (l.uid === u) idx = i; });
   if (idx < 0) return;
   var l = CUR.lines[idx];
-  var v = prompt('จำนวน "' + l.name + '"' + (l.away ? ' (กลับบ้าน)' : '') + '\nใส่ 0 เพื่อลบรายการนี้', String(l.qty));
-  if (v === null) return;
-  v = String(v).trim().replace(/[^0-9.\-]/g, '');
-  var n = Math.round(Number(v));
-  if (!isFinite(n) || n < 0) { toast('ใส่เป็นตัวเลขเท่านั้น'); return; }
-  if (n > 999) n = 999;
-  if (n === 0) CUR.lines.splice(idx, 1); else CUR.lines[idx].qty = n;
-  renderLines(); saveOpen();
+  askQty(l.name, l.qty, l.away, function(n){
+    if (n === null) return;
+    if (n === 0) CUR.lines.splice(idx, 1); else CUR.lines[idx].qty = n;
+    renderLines(); saveOpen();
+  });
+}
+/* กล่องกรอกจำนวน — type="tel" + inputmode="numeric" บังคับแป้นตัวเลขล้วน ไม่มีตัวอักษร */
+function askQty(name, curQty, away, cb){
+  var host = $('modalHost');
+  host.innerHTML =
+   '<div class="mask"><div class="modal">' +
+   '<h3>จำนวน "' + esc(name) + '"' + (away ? ' (กลับบ้าน)' : '') + '</h3>' +
+   '<input class="inp" id="qInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" ' +
+     'style="font-size:26px;text-align:center;font-weight:700">' +
+   '<div class="muted" style="margin-top:6px">ใส่ 0 เพื่อลบรายการนี้</div>' +
+   '<div style="display:flex;gap:8px;margin-top:14px">' +
+     '<button class="btn p" id="qOk" style="flex:1">ตกลง</button>' +
+     '<button class="btn o" id="qCancel">ยกเลิก</button>' +
+   '</div></div></div>';
+  var inp = $('qInp');
+  inp.value = String(curQty);
+  function close(){ host.innerHTML = ''; }
+  function submit(){
+    var v = String(inp.value || '').replace(/[^0-9]/g, '');
+    var n = Math.round(Number(v));
+    if (!v || !isFinite(n) || n < 0) { toast('ใส่เป็นตัวเลขเท่านั้น'); return; }
+    if (n > 999) n = 999;
+    close(); cb(n);
+  }
+  $('qOk').onclick = submit;
+  $('qCancel').onclick = function(){ close(); cb(null); };
+  inp.onkeydown = function(e){ if (e.key === 'Enter') submit(); };
+  setTimeout(function(){ try { inp.focus(); inp.select(); } catch(e){} }, 60);
 }
 /* สลับกลับบ้าน — ถ้ามีหลายหน่วย ถามก่อนว่าจะย้ายกี่หน่วย → แยกเป็นอีกบรรทัด */
 function mergeSameLine(idx){
