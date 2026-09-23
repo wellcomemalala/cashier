@@ -490,7 +490,7 @@ var ORD = {};    // tableKey -> { qty, first, table }
 var LASTC = {};  // tableKey -> เวลาปิดบิลล่าสุด
 var PEND = {}, DONE = {}, GUESTS = {}, GUEST_DATA = {};
 
-function activeGuestCount(records, closedAt){
+function activeGuestCount(records, closedAt, minTs){
   if (!records || typeof records !== 'object') return 0;
   var list = records.count !== undefined ? [records] : Object.keys(records).map(function(k){ return records[k]; });
   var closed = parseTs(closedAt), best = null;
@@ -501,41 +501,54 @@ function activeGuestCount(records, closedAt){
       if (r.afterClosedAt !== (closedAt || '')) return;
     } else if (closed && (!start || start <= closed)) return;
     var ts = parseTs(r.lastTs || r.startTs || r.updatedAt);
+    if (minTs && (!ts || ts.getTime() < minTs.getTime())) return;   // จำนวนคนของรอบเก่า (ห่างจากออเดอร์แรกของรอบนี้เกินช่องว่าง)
     if (!best || (ts && (!best.ts || ts > best.ts))) best = { ts:ts, count:Number(r.count) || 0 };
   });
   return best ? best.count : 0;
 }
+function staleLimitMs(){ return (Number(CFG.stale) > 0 ? Number(CFG.stale) : 3) * 3600000; }
 function refreshGuestCounts(){
   GUESTS = {};
-  Object.keys(GUEST_DATA || {}).forEach(function(k){ GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k]); });
+  var limit = staleLimitMs();
+  Object.keys(GUEST_DATA || {}).forEach(function(k){
+    var od = ORD[k];
+    if (!od) return;   // ไม่มีออเดอร์ในรอบนี้ = ไม่ดึงจำนวนคนเก่ามาใช้
+    var f = parseTs(od.first);
+    GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k], f ? new Date(f.getTime() - limit) : null);
+  });
 }
 
 function computeOrd(){
   ORD = {};
+  var list = {};   // tableKey -> [{ ms, raw, qty, table }]
   var add = function(o){
     if (!o || !o.table) return;
     var k = fbKeySafe(o.table);
     var ts = parseTs(o.timestamp), lc = parseTs(LASTC[k]);
     if (lc && ts && ts.getTime() <= lc.getTime()) return;   // ออเดอร์ของรอบก่อน ปิดบิลไปแล้ว
     if (!ts || localDateStr(ts) !== localDateStr()) return;  // นับเฉพาะวันนี้
-    var e = ORD[k] || (ORD[k] = { qty:0, first:o.timestamp, last:o.timestamp, table:o.table });
-    e.qty += Number(o.quantity) || 1;
-    var f = parseTs(e.first), lt = parseTs(e.last);
-    if (f && ts < f) e.first = o.timestamp;
-    if (lt && ts > lt) e.last = o.timestamp;
+    (list[k] || (list[k] = [])).push({ ms: ts.getTime(), raw: o.timestamp, qty: Number(o.quantity) || 1, table: o.table });
   };
   Object.keys(PEND).forEach(function(k){ add(PEND[k]); });
   Object.keys(DONE).forEach(function(k){ add(DONE[k]); });
-  // โต๊ะที่ไม่มีออเดอร์มานานเกิน X ชั่วโมง = ถือว่าลุกไปแล้ว (กันโต๊ะค้างจากมื้อเที่ยง)
-  var limit = (Number(CFG.stale) > 0 ? Number(CFG.stale) : 3) * 3600000;
-  Object.keys(ORD).forEach(function(k){
-    var lt = parseTs(ORD[k].last);
-    if (!lt || (Date.now() - lt.getTime()) > limit) delete ORD[k];
+  /* แบ่งรอบ: ถ้าออเดอร์สองรายการห่างกันเกิน X ชั่วโมง (ตั้งค่า "stale") = คนละรอบลูกค้า
+     นับเฉพาะรอบล่าสุด (กันออเดอร์มื้อเที่ยงที่ไม่เคยปิดบิลมาปนกับมื้อเย็น) */
+  var limit = staleLimitMs();
+  Object.keys(list).forEach(function(k){
+    var a = list[k].sort(function(x, y){ return x.ms - y.ms; });
+    var s = a.length - 1;
+    while (s > 0 && (a[s].ms - a[s-1].ms) <= limit) s--;
+    var e = { qty:0, first:a[s].raw, last:a[a.length-1].raw, table:a[a.length-1].table };
+    for (var i = s; i < a.length; i++) e.qty += a[i].qty;
+    // โต๊ะที่ไม่มีออเดอร์มานานเกิน X ชั่วโมง = ถือว่าลุกไปแล้ว
+    if ((Date.now() - a[a.length-1].ms) > limit) return;
+    ORD[k] = e;
   });
+  refreshGuestCounts();
   renderTables();
 }
 
-db.ref(POS + '/lastClosed').on('value', function(s){ LASTC = s.val() || {}; refreshGuestCounts(); computeOrd(); });
+db.ref(POS + '/lastClosed').on('value', function(s){ LASTC = s.val() || {}; computeOrd(); });
 db.ref(BASE + 'orders').on('value', function(s){ PEND = s.val() || {}; computeOrd(); });
 
 var _coRef = null, _coDate = '', _gRef = null, _gDate = '';
@@ -574,7 +587,11 @@ function showView(v){
 }
 document.querySelectorAll('.tab').forEach(function(b){
   b.onclick = function(){
-    if (CUR && b.dataset.v !== 'bill') { /* บันทึกค้างไว้ก่อน */ saveOpen(true); CUR = null; }
+    if (CUR && b.dataset.v !== 'bill') {
+      if (CUR.lines && CUR.lines.length) { /* บันทึกค้างไว้ก่อน */ saveOpen(true); }
+      else { clearTimeout(SAVE_T); rOpen.child(CUR.key).remove().catch(function(){}); delete OPEN[CUR.key]; }   // บิลว่าง ไม่ค้างสถานะ "กำลังเก็บเงิน"
+      CUR = null;
+    }
     showView(b.dataset.v);
   };
 });
