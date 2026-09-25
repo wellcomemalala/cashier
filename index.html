@@ -86,10 +86,10 @@ input,select{font-family:inherit;font-size:16px}
 @media(min-width:900px){#tiles{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}}
 .tile{border-radius:12px;min-height:88px;padding:7px 4px;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-weight:700;font-size:14px;text-align:center;line-height:1.15;text-shadow:0 1px 2px rgba(0,0,0,.18);word-break:break-word}
 .tile .pr{font-size:14px;font-weight:600;opacity:.95}
-.tile:active{filter:brightness(.85);transform:scale(.95)}
-.tile{transition:transform .08s ease, box-shadow .08s ease}
+.tile:active{filter:brightness(.85)}
+.tile{transition:box-shadow .08s ease}
 .tile .em{font-size:22px;line-height:1;filter:drop-shadow(0 1px 1px rgba(0,0,0,.25))}
-@keyframes tilehit{0%{box-shadow:0 0 0 0 rgba(255,255,255,.95);transform:scale(.94)}45%{box-shadow:0 0 0 6px rgba(255,255,255,.55);transform:scale(1.04)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0);transform:scale(1)}}
+@keyframes tilehit{0%{box-shadow:0 0 0 0 rgba(255,255,255,.95)}45%{box-shadow:0 0 0 6px rgba(255,255,255,.55)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
 .tile.hit{animation:tilehit .32s ease-out}
 .tile .badge{position:absolute;top:4px;right:6px;background:rgba(0,0,0,.35);border-radius:10px;font-size:12px;padding:1px 7px;font-weight:800}
 .tile{position:relative}
@@ -1045,9 +1045,11 @@ function addLine(id){
   var c = null;
   CAT.forEach(function(x){ if (x.id === id) c = x; });
   if (!c) return;
-  var found = null;
-  CUR.lines.forEach(function(l){ if (!l.mergedTable && l.id === id && !!l.away === AWAY && l.price === c.price) found = l; });
-  if (found) found.qty += MULT;
+  /* นับตามลำดับเวลาที่กด: รวมจำนวนกับรายการ "ล่าสุด" เท่านั้น ถ้าเป็นเมนูเดียวกันติดกัน
+     ถ้าระหว่างนั้นมีการกดเมนูอื่นคั่น ให้ขึ้นบรรทัดใหม่เสมอ ไม่ย้อนไปรวมกับรายการเดิมที่ค้างอยู่ */
+  var last = CUR.lines.length ? CUR.lines[CUR.lines.length - 1] : null;
+  var sameAsLast = last && !last.mergedTable && last.id === id && !!last.away === AWAY && last.price === c.price;
+  if (sameAsLast) last.qty += MULT;
   else CUR.lines.push({ uid:uid(), id:c.id, name:c.name, price:c.price, qty:MULT, away:AWAY });
   renderLines(); saveOpen();
 }
