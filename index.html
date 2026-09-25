@@ -922,6 +922,7 @@ function voidCurrentBill(){
   if (!CUR) return;
   var reason = prompt('เหตุผลที่ยกเลิก (ไม่ใส่ก็ได้)\nเช่น ลูกค้าเปลี่ยนใจ / คีย์ผิดโต๊ะ / ลูกค้าไม่มา', '');
   if (reason === null) return;
+  clearTimeout(SAVE_T); // กันตัวจับเวลาบันทึกอัตโนมัติที่ค้างอยู่ยิงบันทึกบิลกลับขึ้นมาใหม่หลังยกเลิกไปแล้ว
   var dateStr = localDateStr();
   var lines = CUR.lines || [];
   var sub = 0, q = 0;
@@ -1483,7 +1484,13 @@ function showReceipt(bill){
 function drawReceipt(cv, bill){
   var W = 520, P = 26, S = 2;                 // S = scale เพื่อให้รูปคมชัด
   var rows = bill.items.length;
-  var H = 300 + rows * 30 + (bill.note ? 34 : 0) + (bill.awayTotal ? 26 : 0);
+  /* ความสูงต้องครอบคลุมทุกบรรทัดที่วาดจริงด้านล่าง (เดิมคำนวณน้อยไป ทำให้ยอดสุทธิ/วิธีชำระ/
+     ท้ายบิลถูกตัดพ้นขอบรูปที่บันทึก/แชร์ — คำนวณใหม่ให้ตรงกับความสูงที่ใช้จริงทุกบรรทัด + กันเผื่อ 20px) */
+  var H = 400 + rows * 30
+    + (bill.staff ? 24 : 0)
+    + (bill.awayTotal ? 24 : 0)
+    + (bill.discount ? 24 : 0)
+    + (bill.note ? 26 : 0);
   cv.width = W * S; cv.height = H * S;
   cv.style.width = W + 'px';
   var c = cv.getContext('2d');
@@ -2042,8 +2049,11 @@ window.addEventListener('beforeunload', function(){ if (CUR) saveOpen(true); });
       .catch(function () { show('code'); });
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  /* แอปนี้มีระบบรหัสร้าน + ถามชื่อพนักงานของตัวเองอยู่แล้ว (ดู "ระบบล็อกเข้าใช้งาน" ด้านบนของไฟล์)
+     เดิมสคริปต์นี้ auto-boot() ทันทีที่โหลดหน้า ทำให้ป๊อปอัป "พิมพ์ชื่อของคุณ" (z-index สูงกว่าทุกอย่าง)
+     ขึ้นลอยทับหน้าจอใส่รหัสร้านเดิม ก่อนผู้ใช้จะใส่รหัสร้านยืนยันตัวตนด้วยซ้ำ — จึงปิดการ auto-boot ไว้
+     ฟังก์ชันช่วยเหลือ (window.appChangeStaffName ฯลฯ) ยังเรียกใช้เองได้ตามปกติถ้าต้องการภายหลัง */
+  window.__appGateBoot = boot; // เผื่อเรียกเองภายหลังได้ แต่ไม่ auto-run แล้ว เพื่อไม่ให้ชนกับระบบล็อกหลักของแอปนี้
 })();
 </script>
 <!-- ================= จบระบบล็อกเข้าใช้งาน ================= -->
