@@ -348,6 +348,13 @@ function parseTs(s){
 function fbKeySafe(s){ return String(s).replace(/[.#$\[\]\/]/g, '_'); }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
 function baht(n){ return '฿' + Math.round(Number(n)||0).toLocaleString('th-TH'); }
+/* บิลที่แยกจ่าย (splitFromTable) โชว์ในรีพอร์ตเป็น "โต๊ะต้นทาง (แยกจ่าย)" แทนชื่อบิลย่อยที่ดูแปลกตา */
+function billTableHtml(x){
+  return x.splitFromTable ? (esc(x.splitFromTable) + ' <span class="muted" style="font-size:12px">(แยกจ่าย)</span>') : esc(x.table);
+}
+function billTablePlain(x){
+  return x.splitFromTable ? (x.splitFromTable + ' (แยกจ่าย)') : (x.table || '');
+}
 function num(n){ return (Number(n)||0).toLocaleString('th-TH', {maximumFractionDigits:1}); }
 function toast(msg){ var t = $('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove('on'); }, 2000); }
 function uid(){ return 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
@@ -749,6 +756,7 @@ function openBill(table, isQuick){
             segments: (ex.segments ? (Array.isArray(ex.segments) ? ex.segments : Object.keys(ex.segments).map(function(k){ return ex.segments[k]; })) : []),
             baseGuests: Number(ex.baseGuests) || 0,
             mergedFrom: ex.mergedFrom ? String(ex.mergedFrom).split(', ') : [],
+            splitFromTable: ex.splitFromTable || '',
             linked: ex.linked ? String(ex.linked).split(', ') : [] };
     if (CUR.segments.length && !CUR.baseGuests) {
       askGuests(CUR.table, !!isQuick, function(g){
@@ -807,6 +815,7 @@ function renderBillHead(){
     '<button class="chip g" id="guestChip">👥 ' + (ownGuests || '-') + (hasMerged ? ' คนโต๊ะนี้' : ' คน') + '</button>' +
     '<span class="muted">เปิดบิล ' + hhmm(CUR.openedAt) + ' · ' + minsSince(CUR.openedAt) + ' นาที</span>' +
     '<button class="btn o sm" id="mergeBtn">🔀 ย้ายบิลไปโต๊ะอื่น</button>' +
+    '<button class="btn o sm" id="splitBtn">✂️ แยกบางรายการ</button>' +
     '<button class="btn d sm" id="voidBtn" style="margin-left:auto">ยกเลิกบิล</button>';
   /* ออกจากบิล = บันทึกอัตโนมัติ + ปิดสัญญาณเรียกเช็คบิลของโต๊ะนี้ (มาดูแล้ว)
      ถ้าบิลยังไม่มีรายการอะไรเลย (แค่เข้ามาดู/ลูกค้าเปลี่ยนใจยังไม่จ่าย) ห้ามค้างสถานะ
@@ -826,6 +835,7 @@ function renderBillHead(){
     if (hadCall) toast('ปิดสัญญาณเรียกเช็คบิลแล้ว' + (hasItems ? ' · บิลยังเปิดค้างอยู่' : ''));
   };
   $('mergeBtn').onclick = openMerge;
+  $('splitBtn').onclick = openSplitBill;
   $('guestChip').onclick = function(){
     askGuests(CUR.table, false, function(g){
       if (g === null) return;
@@ -955,6 +965,107 @@ async function doMerge(k, tableName){
     $('modalHost').innerHTML = '';
     toast('ย้ายบิลไม่สำเร็จ: ' + e.message);
   }
+}
+
+/* ---------- แยกบางรายการออกเป็นบิลใหม่ (จ่ายแยกกันได้) ----------
+   ใช้ตอนโต๊ะเดียวกันแต่ลูกค้าอยากแยกจ่าย เช่น แยกกลับบ้านออกจากนั่งโต๊ะ หรือคนหนึ่งจ่ายแค่บางเมนู
+   วิธีทำ: ย้ายเฉพาะจำนวนที่เลือกไปเป็น "บิลด่วน" ใหม่ (คีย์ไม่ใช่ตัวเลขล้วน จึงไม่ทับโต๊ะจริง)
+   บิลใหม่นี้เปิด/จ่าย/ปิดผ่านหน้าจอปกติได้เลย — ไม่แตะ closeBill()/ใบเสร็จ/รีพอร์ตเลยสักจุด */
+function nextSplitName(base){
+  var n = 1, name;
+  do { name = base + '-แยก' + n; n++; } while (OPEN[fbKeySafe(name)]);
+  return name;
+}
+function openSplitBill(){
+  if (!CUR || !CUR.lines.length) { toast('ยังไม่มีรายการให้แยก'); return; }
+  if (!ONLINE) { toast('ต้องเชื่อมต่ออินเทอร์เน็ตก่อนแยกบิล'); return; }
+  var host = $('modalHost');
+  var sel = {}; // uid -> จำนวนที่เลือกแยก
+  var splittable = CUR.lines.filter(function(l){ return !l.mergedTable; });
+  function selTotal(){
+    var n = 0;
+    splittable.forEach(function(l){ n += (sel[l.uid]||0) * l.price; });
+    return n;
+  }
+  function rows(){
+    if (!splittable.length) return '<div class="muted">ไม่มีรายการที่แยกได้</div>';
+    return splittable.map(function(l){
+      var s = sel[l.uid] || 0;
+      return '<div class="ln' + (l.away ? ' away' : '') + '">' +
+        '<button class="qb" data-sm="' + l.uid + '">−</button>' +
+        '<span class="q" style="min-width:30px;text-align:center;display:inline-block">' + s + '</span>' +
+        '<button class="qb" data-sp="' + l.uid + '">+</button>' +
+        '<span class="nm">' + esc(l.name) + (l.away ? '<span class="tagaway">กลับบ้าน</span>' : '') +
+          '<small>มีอยู่ ' + l.qty + ' หน่วย · ' + baht(l.price) + '/หน่วย</small></span>' +
+        '<span class="tot">' + baht(l.price * s) + '</span>' +
+      '</div>';
+    }).join('');
+  }
+  function render(){
+    host.innerHTML =
+     '<div class="mask"><div class="modal" style="max-width:480px">' +
+     '<h3>แยกบางรายการเป็นบิลใหม่</h3>' +
+     '<div class="muted" style="margin-bottom:8px">เลือกจำนวนที่จะแยกออกจากโต๊ะ ' + esc(CUR.table) + ' ไปเป็นอีกบิลหนึ่ง เพื่อจ่ายแยกกัน — ส่วนที่เหลือยังอยู่ที่โต๊ะเดิม</div>' +
+     '<div id="splitLines" style="max-height:48vh;overflow:auto">' + rows() + '</div>' +
+     '<div style="display:flex;justify-content:space-between;margin-top:10px;font-weight:700">' +
+       '<span>รวมที่จะแยก</span><span>' + baht(selTotal()) + '</span>' +
+     '</div>' +
+     '<div style="display:flex;gap:8px;margin-top:14px">' +
+       '<button class="btn p" id="spOk" style="flex:1">แยกเป็นบิลใหม่</button>' +
+       '<button class="btn o" id="spCancel">ยกเลิก</button>' +
+     '</div></div></div>';
+    host.querySelectorAll('[data-sm]').forEach(function(b){ b.onclick = function(){ step(b.dataset.sm, -1); }; });
+    host.querySelectorAll('[data-sp]').forEach(function(b){ b.onclick = function(){ step(b.dataset.sp, +1); }; });
+    $('spOk').onclick = confirmSplit;
+    $('spCancel').onclick = function(){ host.innerHTML = ''; };
+  }
+  function step(u, d){
+    var l = null; splittable.forEach(function(x){ if (x.uid === u) l = x; });
+    if (!l) return;
+    var v = (sel[u]||0) + d;
+    if (v < 0) v = 0;
+    if (v > l.qty) v = l.qty;
+    sel[u] = v;
+    render();
+  }
+  function confirmSplit(){
+    var picked = Object.keys(sel).filter(function(k){ return sel[k] > 0; });
+    if (!picked.length) { toast('ยังไม่ได้เลือกจำนวนที่จะแยก'); return; }
+    host.innerHTML = '';
+    doSplitBill(sel);
+  }
+  render();
+}
+function doSplitBill(sel){
+  var newLinesArr = [];
+  CUR.lines.forEach(function(l){
+    var mv = sel[l.uid] || 0;
+    if (mv > 0 && !l.mergedTable) newLinesArr.push({ id:l.id, name:l.name, price:l.price, qty:mv, away:!!l.away });
+  });
+  if (!newLinesArr.length) return;
+  var remaining = [];
+  CUR.lines.forEach(function(l){
+    var mv = sel[l.uid] || 0;
+    if (mv > 0 && !l.mergedTable) {
+      if (mv < l.qty) { l.qty -= mv; remaining.push(l); }   // เหลือบางส่วน
+      // mv >= l.qty : ย้ายหมดทั้งบรรทัด ไม่ต้องใส่กลับ
+    } else remaining.push(l);
+  });
+  CUR.lines = remaining;
+  var name = nextSplitName(CUR.table);
+  var key = fbKeySafe(name);
+  var linesObj = {};
+  newLinesArr.forEach(function(l){ linesObj[uid()] = l; });
+  var splitBill = { table:name, guests:0, openedAt: localStamp(), discount:0,
+    note:'แยกจากโต๊ะ ' + CUR.table, staff: STAFF || '', updatedAt: localStamp(), lines: linesObj,
+    splitFromTable: String(CUR.table) };
+  rOpen.child(key).set(splitBill).then(function(){
+    OPEN[key] = splitBill;
+    renderLines(); saveOpen(true);
+    toast('แยกออกเป็นบิล "' + name + '" แล้ว · ไปกด "ชำระเงิน" ที่บิลนั้นจากผังโต๊ะได้เลย');
+  }).catch(function(e){
+    toast('แยกบิลไม่สำเร็จ: ' + e.message);
+  });
 }
 
 /* ---------- ยกเลิกบิล + บันทึกหลักกาน ----------
@@ -1146,7 +1257,8 @@ function askQty(name, curQty, away, cb){
   inp.onkeydown = function(e){ if (e.key === 'Enter') submit(); };
   setTimeout(function(){ try { inp.focus(); inp.select(); } catch(e){} }, 60);
 }
-/* สลับกลับบ้าน — ถ้ามีหลายหน่วย ถามก่อนว่าจะย้ายกี่หน่วย → แยกเป็นอีกบรรทัด */
+/* สลับกลับบ้าน — กดครั้งเดียวสลับทั้งจำนวนของบรรทัดนั้นทันที ไม่ถามจำนวน
+   (ถ้าอยากแยกบางส่วนเป็นกลับบ้าน/ทานที่ร้าน ให้สั่งเมนูนั้นเพิ่มอีกบรรทัด แล้วค่อยสลับเฉพาะบรรทัดที่เพิ่ม) */
 function mergeSameLine(idx){
   var l = CUR.lines[idx];
   var hit = -1;
@@ -1160,24 +1272,8 @@ function toggleAway(u){
   CUR.lines.forEach(function(l, i){ if (l.uid === u) idx = i; });
   if (idx < 0) return;
   var l = CUR.lines[idx];
-  var toAway = !l.away;
-  var label = toAway ? 'กลับบ้าน' : 'ทานที่ร้าน';
-  var move = l.qty;
-  if (l.qty > 1) {
-    var v = prompt('"' + l.name + '" มี ' + l.qty + ' หน่วย\nจะย้ายไปเป็น "' + label + '" กี่หน่วย?\n(ใส่ ' + l.qty + ' = ย้ายทั้งหมด)', '1');
-    if (v === null) return;
-    move = Math.round(Number(String(v).replace(/[^0-9]/g, '')) || 0);
-    if (move <= 0) return;
-    if (move > l.qty) move = l.qty;
-  }
-  if (move >= l.qty) {
-    l.away = toAway;
-    mergeSameLine(idx);
-  } else {
-    l.qty -= move;
-    CUR.lines.splice(idx + 1, 0, { uid: uid(), id: l.id, name: l.name, price: l.price, qty: move, away: toAway });
-    mergeSameLine(idx + 1);
-  }
+  l.away = !l.away;
+  mergeSameLine(idx);
   renderLines(); saveOpen();
 }
 function totals(){
@@ -1210,7 +1306,7 @@ function renderLines(){
          '<button class="q" data-q="' + l.uid + '" title="กดเพื่อพิมพ์จำนวน">' + l.qty + '</button>' +
          '<button class="qb" data-p="' + l.uid + '">+</button>' +
          '<span class="nm">' + esc(l.name) + (l.away ? '<span class="tagaway">กลับบ้าน</span>' : '') +
-           '<small>' + baht(l.price) + ' / หน่วย · <a href="#" data-a="' + l.uid + '" style="color:#e67e22">' + (l.away ? 'เอากลับมาทานที่ร้าน' : 'ทำเป็นกลับบ้าน') + (l.qty > 1 ? ' (เลือกจำนวนได้)' : '') + '</a></small>' +
+           '<small>' + baht(l.price) + ' / หน่วย · <a href="#" data-a="' + l.uid + '" style="color:#e67e22">' + (l.away ? 'เอากลับมาทานที่ร้าน' : 'ทำเป็นกลับบ้าน') + '</a></small>' +
          '</span>' +
          '<span class="tot">' + baht(l.price * l.qty) + '</span>' +
          '</div>';
@@ -1264,6 +1360,7 @@ function saveOpen(immediate){
   if (!CUR || CUR._moving) return;
   var obj = { table: CUR.table, guests: CUR.guests || 0, openedAt: CUR.openedAt, discount: CUR.discount || 0,
               note: CUR.note || '', staff: STAFF || '', updatedAt: localStamp(), lines: {} };
+  if (CUR.splitFromTable) obj.splitFromTable = CUR.splitFromTable;
   if (CUR.mergedFrom && CUR.mergedFrom.length) obj.mergedFrom = CUR.mergedFrom.join(', ');
   if (CUR.segments && CUR.segments.length) { obj.segments = CUR.segments; obj.baseGuests = Number(CUR.baseGuests) || 0; }
   CUR.lines.forEach(function(l){
@@ -1438,6 +1535,7 @@ function closeBill(t){
     staff: STAFF || '', note: CUR.note || '', date: dateStr
   };
   if (CUR.mergedFrom && CUR.mergedFrom.length) bill.mergedFrom = CUR.mergedFrom.join(', ');
+  if (CUR.splitFromTable) bill.splitFromTable = CUR.splitFromTable;
   /* บิลรวม: แนบส่วนแบ่งรายโต๊ะไว้ ให้รีพอร์ตนับแยกโต๊ะได้ */
   if (CUR.segments && CUR.segments.length) {
     var segA = 0, segQ = 0, segG = 0;
@@ -1638,25 +1736,25 @@ function loadMine(){
 
 function renderMine(d){
   var b = MINE_BILLS, total = 0, cash = 0, other = 0, guests = 0, disc = 0;
-  var mix = {};
+  var mix = {}, n = 0, splitCount = 0;
   b.forEach(function(x){
     var t = x.total || 0;
     total += t; guests += x.guests || 0; disc += x.discount || 0;
     var m = x.method || '-';
     mix[m] = (mix[m] || 0) + t;
     if (m === 'เงินสด') cash += t; else other += t;
+    if (x.splitFromTable) splitCount++; else n++;
   });
-  var n = b.length;
   function kpi(l, v, sub){ return '<div class="kpi"><div class="l">' + l + '</div><div class="v">' + v + '</div><div class="s">' + (sub || '') + '</div></div>'; }
   $('mineKpis').innerHTML =
-    kpi('บิลที่ฉันปิด', n + ' บิล', d) +
+    kpi('บิลที่ฉันปิด', n + ' บิล', d + (splitCount ? ' · +' + splitCount + ' รายการแยกจ่าย' : '')) +
     kpi('ยอดรวม', baht(total), 'ส่วนลดรวม ' + baht(disc)) +
     kpi('💵 เงินสด', baht(cash), 'ยอดที่ควรมีในลิ้นชัก') +
     kpi('💳 ไม่ใช่เงินสด', baht(other), 'โอน/อื่นๆ') +
     kpi('ลูกค้า', guests + ' คน', 'เฉลี่ยบิลละ ' + baht(n ? total / n : 0));
 
   var h = '<h2>บิลของฉัน (' + esc(d) + ')</h2>';
-  if (!n) {
+  if (!b.length) {
     h += '<div class="muted">วันนี้ยังไม่มีบิลที่ปิดในชื่อ ' + esc(STAFF) + '</div>';
     $('mineBills').innerHTML = h;
     return;
@@ -1665,7 +1763,7 @@ function renderMine(d){
   h += '<div id="xcheck">แยกตามการรับชำระ: ' + mk.map(function(k){ return esc(k) + ' ' + baht(mix[k]); }).join(' · ') + '</div>';
   h += '<table class="t"><tr><th>เลขที่</th><th>โต๊ะ</th><th>เวลา</th><th class="r">คน</th><th class="r">ยอด</th><th>จ่าย</th><th></th></tr>';
   b.slice().reverse().forEach(function(x){
-    h += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + esc(x.table) + '</td><td>' + hhmm(x.closedAt) + '</td>' +
+    h += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + billTableHtml(x) + '</td><td>' + hhmm(x.closedAt) + '</td>' +
          '<td class="r">' + (x.guests || '-') + '</td><td class="r"><b>' + baht(x.total) + '</b></td>' +
          '<td>' + esc(x.method || '') + '</td>' +
          '<td class="r"><button class="btn sm o" data-mrc="' + esc(x._k) + '">ใบเสร็จ</button></td></tr>';
@@ -1688,10 +1786,11 @@ $('mineName').onclick = function(){ if (askStaffName()) loadMine(); };
 function renderSummary(d){
   var b = SUM_BILLS;
   var total = 0, dine = 0, away = 0, guests = 0, qty = 0, disc = 0, mins = 0, gBills = 0;
+  var n = 0, splitCount = 0, splitTotal = 0;  // n = จำนวนโต๊ะ/บิลหลัก ไม่นับรายการที่แยกจ่ายซ้ำ
   var mix = {}, items = {};
   b.forEach(function(x){
     total += x.total || 0; dine += x.dineTotal || 0; away += x.awayTotal || 0;
-    qty += x.qty || 0; disc += x.discount || 0; mins += x.minutes || 0;
+    qty += x.qty || 0; disc += x.discount || 0;
     if (x.guests) { guests += x.guests; gBills++; }
     mix[x.method || '-'] = (mix[x.method || '-'] || 0) + (x.total || 0);
     (x.items || []).forEach(function(it){
@@ -1699,11 +1798,12 @@ function renderSummary(d){
       if (!items[k]) items[k] = { qty:0, rev:0 };
       items[k].qty += it.qty || 0; items[k].rev += (it.price || 0) * (it.qty || 0);
     });
+    if (x.splitFromTable) { splitCount++; splitTotal += x.total || 0; }
+    else { n++; mins += x.minutes || 0; }
   });
-  var n = b.length;
   function kpi(l, v, s){ return '<div class="kpi"><div class="l">' + l + '</div><div class="v">' + v + '</div><div class="s">' + (s||'') + '</div></div>'; }
   $('sumKpis').innerHTML =
-    kpi('ยอดขายรวม', baht(total), n + ' บิล') +
+    kpi('ยอดขายรวม', baht(total), n + ' โต๊ะ/บิล' + (splitCount ? ' · +' + splitCount + ' รายการแยกจ่าย (' + baht(splitTotal) + ')' : '')) +
     kpi('เฉลี่ยต่อบิล', baht(n ? total/n : 0), 'ส่วนลดรวม ' + baht(disc)) +
     kpi('จำนวนลูกค้า', guests + ' คน', gBills + '/' + n + ' บิลที่กรอก') +
     kpi('เฉลี่ยต่อหัว', baht(guests ? dine/guests : 0), 'นับเฉพาะทานที่ร้าน') +
@@ -1750,7 +1850,7 @@ function renderSummary(d){
 
   var bh = '<h2>บิลทั้งหมด (' + d + ')</h2><table class="t"><tr><th>เลขที่</th><th>โต๊ะ</th><th>เวลา</th><th class="r">คน</th><th class="r">ยอด</th><th>จ่าย</th><th></th></tr>';
   b.slice().reverse().forEach(function(x){
-    bh += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + esc(x.table) + '</td><td>' + hhmm(x.closedAt) + '</td><td class="r">' + (x.guests||'-') + '</td><td class="r"><b>' + baht(x.total) + '</b></td><td>' + esc(x.method||'') + '</td>' +
+    bh += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + billTableHtml(x) + '</td><td>' + hhmm(x.closedAt) + '</td><td class="r">' + (x.guests||'-') + '</td><td class="r"><b>' + baht(x.total) + '</b></td><td>' + esc(x.method||'') + '</td>' +
           '<td class="r"><button class="btn sm o" data-rc="' + esc(x._k) + '">ใบเสร็จ</button></td></tr>';
   });
   bh += '</table>';
@@ -1769,7 +1869,7 @@ $('sumCsv').onclick = function(){
   var rows = [['เลขที่บิล','วันที่','โต๊ะ','คน','เปิด','ปิด','นาที','หน่วย','ทานที่ร้าน','กลับบ้าน','ส่วนลด','รวม','จ่าย','พนักงาน','รายการ']];
   SUM_BILLS.forEach(function(x){
     var det = (x.items||[]).map(function(i){ return i.name + '×' + i.qty + (i.away ? '(กลับบ้าน)' : ''); }).join(' | ');
-    rows.push([x.billNo||'', x.date||'', x.table||'', x.guests||0, hhmm(x.openedAt), hhmm(x.closedAt), x.minutes||0, x.qty||0, x.dineTotal||0, x.awayTotal||0, x.discount||0, x.total||0, x.method||'', x.staff||'', det]);
+    rows.push([x.billNo||'', x.date||'', billTablePlain(x), x.guests||0, hhmm(x.openedAt), hhmm(x.closedAt), x.minutes||0, x.qty||0, x.dineTotal||0, x.awayTotal||0, x.discount||0, x.total||0, x.method||'', x.staff||'', det]);
   });
   var csv = '\ufeff' + rows.map(function(r){ return r.map(function(c){ return '"' + String(c).replace(/"/g,'""') + '"'; }).join(','); }).join('\n');
   var a = document.createElement('a');
