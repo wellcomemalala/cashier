@@ -47,6 +47,9 @@ input,select{font-family:inherit;font-size:16px}
 .tbtn.away{background:#fff3e0;border-color:#E67E22;font-size:16px}
 .tbtn.away .sub{color:#b85f0c}
 .tbtn .aw{font-size:12px;font-weight:700;color:#b85f0c;background:#ffe2bd;border-radius:6px;padding:1px 6px}
+.tcell{position:relative}
+.tclr{position:absolute;top:5px;right:5px;z-index:2;width:23px;height:23px;line-height:19px;padding:0;border-radius:50%;font-size:13px;font-weight:700;background:#fff;border:1.5px solid #C1533A;color:#C1533A;box-shadow:0 1px 3px rgba(0,0,0,.18);cursor:pointer}
+.tclr:hover{background:#C1533A;color:#fff}
 #lockScr{position:fixed;inset:0;background:#0F6B5C;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
 #lockScr .box{background:#fff;border-radius:16px;padding:26px 22px;max-width:360px;width:100%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.3)}
 #lockScr h2{margin:0 0 6px}
@@ -663,9 +666,10 @@ function renderTables(){
     } else if (called) { cls = 'tbtn call'; sub = 'เรียกเช็คบิล'; }
     var aw = awayFor(t, linkedSet), awQ = 0; aw.forEach(function(x){ awQ += x.qty; });
     var awBadge = aw.length ? '<span class="aw">🏠 มีกลับบ้าน ' + awQ + ' ถุง</span>' : '';
-    h += '<button class="' + cls + '" data-t="' + esc(t) + '">' + esc(t) +
+    var clrBtn = (UNLOCKED && (o || od || called)) ? '<button class="tclr" data-clr="' + esc(t) + '" title="ล้างสถานะ (แอดมิน)">✕</button>' : '';
+    h += '<div class="tcell"><button class="' + cls + '" data-t="' + esc(t) + '">' + esc(t) +
          (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') +
-         (amt ? '<span class="amt">' + amt + '</span>' : '') + awBadge + '</button>';
+         (amt ? '<span class="amt">' + amt + '</span>' : '') + awBadge + '</button>' + clrBtn + '</div>';
   }
   // ปุ่มกลับบ้าน/เดลิเวอรี่ — ขึ้นทุกชื่อที่มีในเครื่องรับออเดอร์ จนกว่าจะปิดบิล
   var awayKeys = {};
@@ -678,8 +682,9 @@ function renderTables(){
       var o = OPEN[k], od = ORD[k], nm = awayKeys[k], sub = '', amt = '';
       if (o) { openCount++; openAmt += openTotal(o); sub = minsSince(o.openedAt) + ' นาที'; amt = baht(openTotal(o)); }
       else if (od) sub = 'ยังไม่คิดเงิน · ' + od.qty + ' ถุง · ' + minsSince(od.first) + ' นาที';
-      h += '<button class="tbtn ' + (o ? 'ord' : 'away') + '" data-t="' + esc(nm) + '">🏠 ' + esc(nm) +
-           (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + (amt ? '<span class="amt">' + amt + '</span>' : '') + '</button>';
+      var clrBtn = (UNLOCKED && (o || od)) ? '<button class="tclr" data-clr="' + esc(nm) + '" title="ล้างสถานะ (แอดมิน)">✕</button>' : '';
+      h += '<div class="tcell"><button class="tbtn ' + (o ? 'ord' : 'away') + '" data-t="' + esc(nm) + '">🏠 ' + esc(nm) +
+           (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + (amt ? '<span class="amt">' + amt + '</span>' : '') + '</button>' + clrBtn + '</div>';
     });
   }
   // บิลด่วนที่เปิดค้างไว้ (คีย์ไม่ใช่ตัวเลข)
@@ -687,15 +692,51 @@ function renderTables(){
     if (/^\d+$/.test(k) && Number(k) <= CFG.tables) return;
     if (isAwayName(OPEN[k].table)) return;
     var o = OPEN[k]; openCount++; openAmt += openTotal(o);
-    h += '<button class="tbtn ord" data-t="' + esc(o.table || k) + '" style="font-size:15px">' + esc(o.table || k) +
-         '<span class="sub">' + minsSince(o.openedAt) + ' นาที</span><span class="amt">' + baht(openTotal(o)) + '</span></button>';
+    var nm = o.table || k;
+    var clrBtn = UNLOCKED ? '<button class="tclr" data-clr="' + esc(nm) + '" title="ล้างสถานะ (แอดมิน)">✕</button>' : '';
+    h += '<div class="tcell"><button class="tbtn ord" data-t="' + esc(nm) + '" style="font-size:15px">' + esc(nm) +
+         '<span class="sub">' + minsSince(o.openedAt) + ' นาที</span><span class="amt">' + baht(openTotal(o)) + '</span></button>' + clrBtn + '</div>';
   });
   g.innerHTML = h;
   g.querySelectorAll('.tbtn').forEach(function(b){ b.onclick = function(){ openBill(b.dataset.t); }; });
+  g.querySelectorAll('.tclr').forEach(function(b){ b.onclick = function(e){ e.stopPropagation(); clearTableStatus(b.dataset.clr); }; });
   $('liveSum').textContent = openCount ? ('กำลังเปิด ' + openCount + ' บิล · รวม ' + baht(openAmt)) : 'ยังไม่มีบิลที่เปิดอยู่';
 }
 setInterval(function(){ if (!$('v-tables').classList.contains('hidden')) renderTables(); }, 30000);
 
+/* ---------- ล้างสถานะโต๊ะ (เฉพาะโหมดเจ้าของร้าน ปลดล็อกด้วย PIN แล้วเท่านั้น) ----------
+   ใช้ตอนสอนงาน/กดตัวอย่างค้างไว้ที่โต๊ะใดโต๊ะหนึ่ง — ล้าง "สถานะ UI" ทั้ง 3 แบบของโต๊ะนั้นโต๊ะเดียว:
+   บิลเปิดค้าง (แคชเชียร์กำลังกดบิล), สัญญาณเรียกเช็คบิล, และสถานะไม่ว่าง (จากออเดอร์)
+   - ไม่ผ่าน closeBill() เลย จึงไม่ถูกบันทึกเป็นยอดขาย ไม่นับในสรุปยอด/ประวัติของฉัน
+   - ไม่แตะข้อมูลออเดอร์จริงใน racing_order_app (อ่านอย่างเดียว) แค่เซ็ต lastClosed ของโต๊ะนั้นเป็นตอนนี้
+     ถ้ามีออเดอร์จริงค้างอยู่ พนักงานทั่วไปเลี่ยงไม่ได้อยู่ดี เพราะปุ่มนี้เห็นเฉพาะแอดมิน (UNLOCKED) เท่านั้น
+   - บันทึก log แยกไว้ที่ pos_cashier_v1/adminClears/{วันที่} เผื่อย้อนดูว่าใครล้าง โต๊ะไหน มีอะไรค้างอยู่ตอนล้าง */
+function clearTableStatus(tableName){
+  if (!UNLOCKED) return;
+  var key = fbKeySafe(tableName);
+  var o = OPEN[key], od = ORD[key], called = !!(CALLS && (CALLS[key] || CALLS[tableName]));
+  var parts = [];
+  if (o) parts.push('บิลเปิดค้าง ' + baht(openTotal(o)));
+  if (od) parts.push('ออเดอร์ค้าง ' + od.qty + ' จาน');
+  if (called) parts.push('เรียกเช็คบิล');
+  if (!parts.length) { toast('โต๊ะนี้ไม่มีสถานะค้างอยู่'); return; }
+  var msg = 'ล้างสถานะโต๊ะ ' + tableName + ' ?\n' + parts.join(' · ') +
+    '\n\nจะไม่นับเป็นยอดขาย (ใช้สำหรับล้างสถานะตัวอย่าง/สถานะค้าง)\nบิลที่เก็บเงินไปแล้วก่อนหน้านี้ไม่หาย';
+  if (!confirm(msg)) return;
+  db.ref(POS + '/adminClears/' + localDateStr()).push({
+    table: tableName, clearedAt: localStamp(), by: STAFF || '',
+    hadOpenBill: !!o, openAmount: o ? openTotal(o) : 0,
+    hadOrder: !!od, orderQty: od ? od.qty : 0,
+    hadCall: called
+  }).catch(function(e){ console.error('admin clear log', e); });
+  if (o) {
+    rOpen.child(key).remove().catch(function(){}); delete OPEN[key];
+    if (CUR && CUR.key === key) { clearTimeout(SAVE_T); CUR = null; showView('tables'); }
+  }
+  if (called) db.ref(BASE + 'billing_requests/' + key).remove().catch(function(){});
+  db.ref(POS + '/lastClosed/' + key).set(localStamp()).catch(function(){});
+  toast('ล้างสถานะโต๊ะ ' + tableName + ' แล้ว');
+}
 
 /* ---------- open / edit bill ---------- */
 function openBill(table, isQuick){
@@ -1807,6 +1848,7 @@ function setUnlocked(v){
   document.querySelectorAll('.lockTab').forEach(function(b){ b.classList.toggle('hidden', !UNLOCKED); });
   $('ownerBtn').textContent = UNLOCKED ? 'ล็อก' : 'ฯ';
   if (!UNLOCKED) showView('tables');
+  renderTables();
 }
 $('ownerBtn').onclick = function(){
   if (UNLOCKED) { setUnlocked(false); toast('ล็อกแล้ว'); return; }
