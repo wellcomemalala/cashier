@@ -706,7 +706,26 @@ function renderTables(){
          '<span class="sub">' + minsSince(o.openedAt) + ' นาที</span><span class="amt">' + baht(openTotal(o)) + '</span></button>' + clrBtn + '</div>';
   });
   g.innerHTML = h;
-  g.querySelectorAll('.tbtn').forEach(function(b){ b.onclick = function(){ openBill(b.dataset.t); }; });
+  g.querySelectorAll('.tbtn').forEach(function(b){
+    b.onclick = function(){
+      var t = b.dataset.t;
+      // ✅ FIX: บังคับให้โต๊ะที่ยังไม่มีสถานะ (สีขาว/ว่าง) ต้องสั่งอาหารผ่านระบบรับออเดอร์ก่อน
+      // ถึงจะมากดเก็บเงินที่นี่ได้ — กันพนักงานเปิดบิลเองข้ามระบบรับออเดอร์ ทำให้ยอดขายแยกเมนูไม่แม่น
+      var key = fbKeySafe(t);
+      var isDineIn = /^\d+$/.test(t) && Number(t) <= CFG.tables;
+      var hasOpen = !!OPEN[key];
+      var hasOrder = !!ORD[key];
+      var isCalled = !!(CALLS && (CALLS[key] || CALLS[t]));
+      if (isDineIn && !hasOpen && !hasOrder && !isCalled) {
+        if (!UNLOCKED) {
+          toast('โต๊ะ ' + t + ' ยังไม่มีออเดอร์ · สั่งผ่านระบบรับออเดอร์ก่อนนะ');
+          return;
+        }
+        if (!confirm('โต๊ะ ' + t + ' ยังไม่มีออเดอร์จากระบบรับออเดอร์เลย\nปกติต้องสั่งผ่านระบบรับออเดอร์ก่อนเสมอ เพื่อให้ยอดขายแยกเมนูถูกต้อง\n\nต้องการเปิดบิลเก็บเงินเองเลยไหม (โหมดแอดมิน)?')) return;
+      }
+      openBill(t);
+    };
+  });
   g.querySelectorAll('.tclr').forEach(function(b){ b.onclick = function(e){ e.stopPropagation(); clearTableStatus(b.dataset.clr); }; });
   $('liveSum').textContent = openCount ? ('กำลังเปิด ' + openCount + ' บิล · รวม ' + baht(openAmt)) : 'ยังไม่มีบิลที่เปิดอยู่';
 }
