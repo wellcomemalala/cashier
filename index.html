@@ -1452,8 +1452,7 @@ function loadCrossCheck(){
 
     function lineOf(G){
       var names = Object.keys(G.agg).sort(function(a,b){ return G.agg[b] - G.agg[a]; });
-      var txt = names.slice(0, 8).map(function(n){ return esc(n) + ' ×' + G.agg[n]; }).join(' · ');
-      if (names.length > 8) txt += ' · +' + (names.length - 8) + ' รายการ';
+      var txt = names.map(function(n){ return esc(n) + ' ×' + G.agg[n]; }).join(' · ');
       return txt;
     }
 
