@@ -267,9 +267,7 @@ table.t td.r,table.t th.r{text-align:right}
     <input class="inp" id="setStaff" placeholder="เช่น ส้ม">
     <label class="fld">รหัสเจ้าของร้าน (ใช้เปิดหน้าสรุป/ตั้งค่า)</label>
     <input class="inp" id="setPin" inputmode="numeric" placeholder="1111">
-    <label class="fld">ถือว่าโต๊ะว่าง ถ้าไม่มีออเดอร์ใหม่เกินกี่ชั่วโมง</label>
-    <input class="inp" id="setStale" inputmode="decimal" placeholder="3">
-    <div class="muted" style="margin:4px 0 10px">กันโต๊ะที่ลูกค้ากลับไปแล้วแต่ไม่ได้เก็บเงินผ่านเครื่องนี้ ค้างสถานะไม่ว่างไว้ทั้งวัน</div>
+    <div class="muted" style="margin:4px 0 10px">ถ้ากดโต๊ะผิดโดยบังเอิญ เข้าโหมดเจ้าของร้านแล้วกด ✕ ที่โต๊ะนั้น หรือกดปุ่มด้านล่างเพื่อล้างสถานะไม่ว่างทุกโต๊ะทีเดียว</div>
     <button class="btn w sm" id="clearStale">ล้างสถานะ ไม่ว่าง ทุกโต๊ะตอนนี้</button>
     <div style="margin-top:12px"><button class="btn p" id="saveShop">บันทึกข้อมูลร้าน</button></div>
   </div>
@@ -462,7 +460,6 @@ rCfg.on('value', function(s){
   CFG.tables = Number(v.tables) || 25;
   CFG.pin    = String(v.pin || '1111');
   CFG.stale  = Number(v.stale) > 0 ? Number(v.stale) : 3;
-  if ($('setStale')) $('setStale').value = CFG.stale;
   if (typeof computeOrd === 'function') computeOrd();
   renderTables();
   if ($('setShop')) { $('setShop').value = CFG.shop; $('setTables').value = CFG.tables; $('setPin').value = CFG.pin; }
@@ -559,8 +556,8 @@ function computeOrd(){
     while (s > 0 && (a[s].ms - a[s-1].ms) <= limit) s--;
     var e = { qty:0, first:a[s].raw, last:a[a.length-1].raw, table:a[a.length-1].table };
     for (var i = s; i < a.length; i++) e.qty += a[i].qty;
-    // โต๊ะที่ไม่มีออเดอร์มานานเกิน X ชั่วโมง = ถือว่าลุกไปแล้ว
-    if ((Date.now() - a[a.length-1].ms) > limit) return;
+    // ✅ FIX: เอาการ "ถือว่าโต๊ะว่างถ้าไม่มีออเดอร์เกิน X ชม." ออก — ปล่อยให้ค้างเป็น "ไม่ว่าง" ไว้เสมอ
+    // จนกว่าจะปิดบิลจริงผ่านแคชเชียร์ (ล้าง LASTC) หรือแอดมินกดล้างสถานะเอง กันเคสค้างจานเก่าแล้วดันโชว์ว่าง ทั้งที่ยังไม่ปิดบิล
     ORD[k] = e;
   });
   refreshGuestCounts();
@@ -1957,8 +1954,9 @@ $('saveShop').onclick = function(){
   STAFF = ($('setStaff').value || '').trim();
   localStorage.setItem('cashier_staff', STAFF);
   var np = ($('setPin').value || '').trim() || '1111';
-  var ns = Number($('setStale').value) > 0 ? Number($('setStale').value) : 3;
-  rCfg.update({ shop: $('setShop').value || 'ร้านอาหารแวะถัวะ', tables: Number($('setTables').value) || 25, pin: np, stale: ns })
+  // ✅ FIX: เอาการตั้งค่า "ถือว่าโต๊ะว่างถ้าไม่มีออเดอร์เกิน X ชม." ออกจากหน้าตั้งค่าแล้ว
+  // ไม่อ่านจาก #setStale อีกต่อไป (ไม่งั้น element ไม่มีจริง จะพังตอนกดบันทึก) — ใช้ค่าที่มีอยู่เดิมไปเรื่อยๆ แค่ไว้แบ่งรอบออเดอร์ภายใน ไม่ใช้ตัดสิน "ว่าง" อีกแล้ว
+  rCfg.update({ shop: $('setShop').value || 'ร้านอาหารแวะถัวะ', tables: Number($('setTables').value) || 25, pin: np })
     .then(function(){ toast('บันทึกแล้ว'); }).catch(function(e){ toast('ผิดพลาด: ' + e.message); });
 };
 
