@@ -215,7 +215,7 @@ table.t td.r,table.t th.r{text-align:right}
     </div>
     <div class="card" style="margin-bottom:0">
       <div id="padBar">
-        <span class="muted" style="font-weight:600">กดเมนูเพื่อนับ · แก้จำนวนได้ที่ตัวเลขในรายการ · กลับบ้านกดที่ "ทำเป็นกลับบ้าน"</span>
+        <span class="muted" style="font-weight:600">กดเมนูเพื่อนับ · แตะที่รายการเพื่อแก้จำนวน · กลับบ้านกดที่ "ทำเป็นกลับบ้าน"</span>
       </div>
       <div id="tiles"></div>
     </div>
@@ -247,11 +247,9 @@ table.t td.r,table.t th.r{text-align:right}
       <span id="mineWho" style="font-weight:700;color:#0F6B5C"></span>
       <input type="date" id="mineDate" class="inp" style="width:auto;padding:7px">
       <button class="btn sm o" id="mineReload">รีเฟรช</button>
-      <button class="btn sm o" id="mineName">เปลี่ยนชื่อ</button>
     </div>
     <div class="note">แสดงเฉพาะบิลที่ปิดด้วย<b>ชื่อพนักงานบนเครื่องนี้</b> ใช้เช็คเงินในลิ้นชักตอนส่งกะ · ดูได้อย่างเดียว แก้ไขไม่ได้</div>
   </div>
-  <div class="kpis" id="mineKpis"></div>
   <div class="card" id="mineBills"></div>
 </div>
 
@@ -1231,46 +1229,54 @@ function changeQty(u, d){
   if (CUR.lines[idx].qty <= 0) CUR.lines.splice(idx, 1);
   renderLines(); saveOpen();
 }
-/* กดที่ตัวเลข → พิมพ์จำนวนใหม่ได้เลย (ใส่ 0 = ลบรายการ)
-   ใช้กล่องกรอกของตัวเอง (ไม่ใช่ prompt ของเบราว์เซอร์) เพื่อบังคับให้ขึ้นแป้นตัวเลขล้วน */
+/* กดที่รายการ → เปิดหน้าแก้ไข (แบบ Loyverse): ปุ่ม − / + / พิมพ์ตัวเลข / ลบออกจากรายการ
+   หน้ารายการหลักไม่มีปุ่ม +/− แล้ว กันเผลอแตะตอนเลื่อนจอ · การแก้ไขมีผลเมื่อกด "บันทึก" เท่านั้น */
 function setQty(u){
   if (!CUR) return;
   var idx = -1;
   CUR.lines.forEach(function(l, i){ if (l.uid === u) idx = i; });
   if (idx < 0) return;
   var l = CUR.lines[idx];
-  askQty(l.name, l.qty, l.away, function(n){
-    if (n === null) return;
-    if (n === 0) CUR.lines.splice(idx, 1); else CUR.lines[idx].qty = n;
-    renderLines(); saveOpen();
-  });
-}
-/* กล่องกรอกจำนวน — type="tel" + inputmode="numeric" บังคับแป้นตัวเลขล้วน ไม่มีตัวอักษร */
-function askQty(name, curQty, away, cb){
   var host = $('modalHost');
   host.innerHTML =
    '<div class="mask"><div class="modal">' +
-   '<h3>จำนวน "' + esc(name) + '"' + (away ? ' (กลับบ้าน)' : '') + '</h3>' +
-   '<input class="inp" id="qInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" ' +
-     'style="font-size:26px;text-align:center;font-weight:700">' +
-   '<div class="muted" style="margin-top:6px">ใส่ 0 เพื่อลบรายการนี้</div>' +
-   '<div style="display:flex;gap:8px;margin-top:14px">' +
-     '<button class="btn p" id="qOk" style="flex:1">ตกลง</button>' +
-     '<button class="btn o" id="qCancel">ยกเลิก</button>' +
-   '</div></div></div>';
-  var inp = $('qInp');
-  inp.value = String(curQty);
-  function close(){ host.innerHTML = ''; }
-  function submit(){
+   '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">' +
+     '<button class="btn o sm" id="eX" aria-label="ปิด">✕</button>' +
+     '<h3 style="margin:0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(l.name) + (l.away ? ' (กลับบ้าน)' : '') + '</h3>' +
+     '<button class="btn p sm" id="eSave">บันทึก</button>' +
+   '</div>' +
+   '<div class="muted" style="font-weight:700;margin-bottom:6px">จำนวน</div>' +
+   '<div style="display:flex;gap:10px;align-items:center">' +
+     '<button class="btn o" id="eMinus" style="width:52px;height:52px;font-size:26px">−</button>' +
+     '<input class="inp" id="eInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" style="flex:1;min-width:0;font-size:26px;text-align:center;font-weight:700">' +
+     '<button class="btn o" id="ePlus" style="width:52px;height:52px;font-size:26px">+</button>' +
+   '</div>' +
+   '<button class="btn d" id="eDel" style="width:100%;margin-top:22px">ลบออกจากรายการ</button>' +
+   '</div></div>';
+  var inp = $('eInp');
+  inp.value = String(l.qty);
+  function cur(){
     var v = String(inp.value || '').replace(/[^0-9]/g, '');
     var n = Math.round(Number(v));
-    if (!v || !isFinite(n) || n < 0) { toast('ใส่เป็นตัวเลขเท่านั้น'); return; }
-    if (n > 999) n = 999;
-    close(); cb(n);
+    return (!v || !isFinite(n)) ? 0 : Math.min(n, 999);
   }
-  $('qOk').onclick = submit;
-  $('qCancel').onclick = function(){ close(); cb(null); };
-  inp.onkeydown = function(e){ if (e.key === 'Enter') submit(); };
+  function close(){ host.innerHTML = ''; }
+  function find(){ var k = -1; CUR.lines.forEach(function(x, i){ if (x.uid === u) k = i; }); return k; }
+  inp.oninput = function(){ var v = inp.value.replace(/[^0-9]/g, ''); if (v !== inp.value) inp.value = v; };
+  $('eMinus').onclick = function(){ inp.value = String(Math.max(1, cur() - 1)); };
+  $('ePlus').onclick  = function(){ inp.value = String(Math.min(999, cur() + 1)); };
+  $('eX').onclick = close;
+  $('eSave').onclick = function(){
+    var n = cur();
+    if (n < 1) { toast('จำนวนต้องอย่างน้อย 1 · ถ้าไม่เอาให้กด "ลบออกจากรายการ"'); return; }
+    var k = find(); if (k >= 0) CUR.lines[k].qty = n;
+    close(); renderLines(); saveOpen();
+  };
+  $('eDel').onclick = function(){
+    var k = find(); if (k >= 0) CUR.lines.splice(k, 1);
+    close(); renderLines(); saveOpen();
+  };
+  inp.onkeydown = function(e){ if (e.key === 'Enter') $('eSave').onclick(); };
   setTimeout(function(){ try { inp.focus(); inp.select(); } catch(e){} }, 60);
 }
 /* สลับกลับบ้าน — กดครั้งเดียวสลับทั้งจำนวนของบรรทัดนั้นทันที ไม่ถามจำนวน
@@ -1317,10 +1323,8 @@ function renderLines(){
         '<small>ฝากจากโต๊ะ ' + esc(l.mergedTable) + ' · นับแล้ว</small></span><span class="tot">' + baht(l.price*l.qty) + '</span></div>';
       return;
     }
-    h += '<div class="ln' + (l.away ? ' away' : '') + '">' +
-         '<button class="qb" data-m="' + l.uid + '">−</button>' +
-         '<button class="q" data-q="' + l.uid + '" title="กดเพื่อพิมพ์จำนวน">' + l.qty + '</button>' +
-         '<button class="qb" data-p="' + l.uid + '">+</button>' +
+    h += '<div class="ln' + (l.away ? ' away' : '') + '" data-q="' + l.uid + '" style="cursor:pointer">' +
+         '<span class="q">' + l.qty + '</span>' +
          '<span class="nm">' + esc(l.name) + (l.away ? '<span class="tagaway">กลับบ้าน</span>' : '') +
            '<small>' + baht(l.price) + ' / หน่วย · <a href="#" data-a="' + l.uid + '" style="color:#e67e22">' + (l.away ? 'เอากลับมาทานที่ร้าน' : 'ทำเป็นกลับบ้าน') + '</a></small>' +
          '</span>' +
@@ -1329,9 +1333,7 @@ function renderLines(){
   });
   el.innerHTML = h;
   $('emptyLine').classList.toggle('hidden', CUR.lines.length > 0);
-  el.querySelectorAll('[data-m]').forEach(function(b){ b.onclick = function(){ changeQty(b.dataset.m, -1); }; });
-  el.querySelectorAll('[data-p]').forEach(function(b){ b.onclick = function(){ changeQty(b.dataset.p, +1); }; });
-  el.querySelectorAll('[data-a]').forEach(function(b){ b.onclick = function(e){ e.preventDefault(); toggleAway(b.dataset.a); }; });
+  el.querySelectorAll('[data-a]').forEach(function(b){ b.onclick = function(e){ e.preventDefault(); e.stopPropagation(); toggleAway(b.dataset.a); }; });
   el.querySelectorAll('[data-q]').forEach(function(b){ b.onclick = function(){ setQty(b.dataset.q); }; });
   paintTileBadges();
   renderSumBar();
@@ -1452,8 +1454,7 @@ function loadCrossCheck(){
 
     function lineOf(G){
       var names = Object.keys(G.agg).sort(function(a,b){ return G.agg[b] - G.agg[a]; });
-      var txt = names.slice(0, 8).map(function(n){ return esc(n) + ' ×' + G.agg[n]; }).join(' · ');
-      if (names.length > 8) txt += ' · +' + (names.length - 8) + ' รายการ';
+      var txt = names.map(function(n){ return esc(n) + ' ×' + G.agg[n]; }).join(' · ');
       return txt;
     }
 
@@ -1731,8 +1732,7 @@ function askStaffName(){
 function loadMine(){
   if (!STAFF && !askStaffName()) {
     $('mineWho').textContent = '';
-    $('mineKpis').innerHTML = '';
-    $('mineBills').innerHTML = '<div class="muted">ยังไม่ได้ตั้งชื่อพนักงานบนเครื่องนี้ — กดปุ่ม เปลี่ยนชื่อ</div>';
+    $('mineBills').innerHTML = '<div class="muted">ยังไม่ได้ตั้งชื่อพนักงานบนเครื่องนี้ — กด รีเฟรช เพื่อตั้งชื่อ</div>';
     return;
   }
   $('mineWho').textContent = '👤 ' + STAFF;
@@ -1761,22 +1761,12 @@ function renderMine(d){
     if (m === 'เงินสด') cash += t; else other += t;
     if (x.splitFromTable) splitCount++; else n++;
   });
-  function kpi(l, v, sub){ return '<div class="kpi"><div class="l">' + l + '</div><div class="v">' + v + '</div><div class="s">' + (sub || '') + '</div></div>'; }
-  $('mineKpis').innerHTML =
-    kpi('บิลที่ฉันปิด', n + ' บิล', d + (splitCount ? ' · +' + splitCount + ' รายการแยกจ่าย' : '')) +
-    kpi('ยอดรวม', baht(total), 'ส่วนลดรวม ' + baht(disc)) +
-    kpi('💵 เงินสด', baht(cash), 'ยอดที่ควรมีในลิ้นชัก') +
-    kpi('💳 ไม่ใช่เงินสด', baht(other), 'โอน/อื่นๆ') +
-    kpi('ลูกค้า', guests + ' คน', 'เฉลี่ยบิลละ ' + baht(n ? total / n : 0));
-
   var h = '<h2>บิลของฉัน (' + esc(d) + ')</h2>';
   if (!b.length) {
     h += '<div class="muted">วันนี้ยังไม่มีบิลที่ปิดในชื่อ ' + esc(STAFF) + '</div>';
     $('mineBills').innerHTML = h;
     return;
   }
-  var mk = Object.keys(mix).sort(function(a, c){ return mix[c] - mix[a]; });
-  h += '<div id="xcheck">แยกตามการรับชำระ: ' + mk.map(function(k){ return esc(k) + ' ' + baht(mix[k]); }).join(' · ') + '</div>';
   h += '<table class="t"><tr><th>เลขที่</th><th>โต๊ะ</th><th>เวลา</th><th class="r">คน</th><th class="r">ยอด</th><th>จ่าย</th><th></th></tr>';
   b.slice().reverse().forEach(function(x){
     h += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + billTableHtml(x) + '</td><td>' + hhmm(x.closedAt) + '</td>' +
@@ -1797,7 +1787,6 @@ function renderMine(d){
 
 $('mineReload').onclick = loadMine;
 $('mineDate').onchange = loadMine;
-$('mineName').onclick = function(){ if (askStaffName()) loadMine(); };
 
 function renderSummary(d){
   var b = SUM_BILLS;
