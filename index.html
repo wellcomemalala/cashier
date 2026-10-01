@@ -523,12 +523,10 @@ function activeGuestCount(records, closedAt, minTs){
 function staleLimitMs(){ return (Number(CFG.stale) > 0 ? Number(CFG.stale) : 3) * 3600000; }
 function refreshGuestCounts(){
   GUESTS = {};
-  var limit = staleLimitMs();
   Object.keys(GUEST_DATA || {}).forEach(function(k){
     var od = ORD[k];
     if (!od) return;   // ไม่มีออเดอร์ในรอบนี้ = ไม่ดึงจำนวนคนเก่ามาใช้
-    var f = parseTs(od.first);
-    GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k], f ? new Date(f.getTime() - limit) : null);
+    GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k], null);   // แบ่งรอบด้วยการปิดบิลเท่านั้น ไม่ใช้เวลาตัดรอบ
   });
 }
 
@@ -545,13 +543,11 @@ function computeOrd(){
   };
   Object.keys(PEND).forEach(function(k){ add(PEND[k]); });
   Object.keys(DONE).forEach(function(k){ add(DONE[k]); });
-  /* แบ่งรอบ: ถ้าออเดอร์สองรายการห่างกันเกิน X ชั่วโมง (ตั้งค่า "stale") = คนละรอบลูกค้า
-     นับเฉพาะรอบล่าสุด (กันออเดอร์มื้อเที่ยงที่ไม่เคยปิดบิลมาปนกับมื้อเย็น) */
-  var limit = staleLimitMs();
+  /* เลิกใช้กฎ "ห่างกันเกิน X ชม." — รอบของโต๊ะจบเมื่อปิดบิลเท่านั้น
+     ออเดอร์ทั้งหมดหลังเวลาปิดบิลล่าสุด (LASTC) ของวันนี้ นับเป็นรอบปัจจุบัน */
   Object.keys(list).forEach(function(k){
     var a = list[k].sort(function(x, y){ return x.ms - y.ms; });
-    var s = a.length - 1;
-    while (s > 0 && (a[s].ms - a[s-1].ms) <= limit) s--;
+    var s = 0;
     var e = { qty:0, first:a[s].raw, last:a[a.length-1].raw, table:a[a.length-1].table };
     for (var i = s; i < a.length; i++) e.qty += a[i].qty;
     // ✅ FIX: เอาการ "ถือว่าโต๊ะว่างถ้าไม่มีออเดอร์เกิน X ชม." ออก — ปล่อยให้ค้างเป็น "ไม่ว่าง" ไว้เสมอ
