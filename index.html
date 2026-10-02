@@ -523,12 +523,10 @@ function activeGuestCount(records, closedAt, minTs){
 function staleLimitMs(){ return (Number(CFG.stale) > 0 ? Number(CFG.stale) : 3) * 3600000; }
 function refreshGuestCounts(){
   GUESTS = {};
-  var limit = staleLimitMs();
   Object.keys(GUEST_DATA || {}).forEach(function(k){
     var od = ORD[k];
     if (!od) return;   // ไม่มีออเดอร์ในรอบนี้ = ไม่ดึงจำนวนคนเก่ามาใช้
-    var f = parseTs(od.first);
-    GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k], f ? new Date(f.getTime() - limit) : null);
+    GUESTS[k] = activeGuestCount(GUEST_DATA[k], LASTC[k], null);   // แบ่งรอบด้วยการปิดบิลเท่านั้น ไม่ใช้เวลาตัดรอบ
   });
 }
 
@@ -545,13 +543,11 @@ function computeOrd(){
   };
   Object.keys(PEND).forEach(function(k){ add(PEND[k]); });
   Object.keys(DONE).forEach(function(k){ add(DONE[k]); });
-  /* แบ่งรอบ: ถ้าออเดอร์สองรายการห่างกันเกิน X ชั่วโมง (ตั้งค่า "stale") = คนละรอบลูกค้า
-     นับเฉพาะรอบล่าสุด (กันออเดอร์มื้อเที่ยงที่ไม่เคยปิดบิลมาปนกับมื้อเย็น) */
-  var limit = staleLimitMs();
+  /* เลิกใช้กฎ "ห่างกันเกิน X ชม." — รอบของโต๊ะจบเมื่อปิดบิลเท่านั้น
+     ออเดอร์ทั้งหมดหลังเวลาปิดบิลล่าสุด (LASTC) ของวันนี้ นับเป็นรอบปัจจุบัน */
   Object.keys(list).forEach(function(k){
     var a = list[k].sort(function(x, y){ return x.ms - y.ms; });
-    var s = a.length - 1;
-    while (s > 0 && (a[s].ms - a[s-1].ms) <= limit) s--;
+    var s = 0;
     var e = { qty:0, first:a[s].raw, last:a[a.length-1].raw, table:a[a.length-1].table };
     for (var i = s; i < a.length; i++) e.qty += a[i].qty;
     // ✅ FIX: เอาการ "ถือว่าโต๊ะว่างถ้าไม่มีออเดอร์เกิน X ชม." ออก — ปล่อยให้ค้างเป็น "ไม่ว่าง" ไว้เสมอ
@@ -1248,7 +1244,7 @@ function setQty(u){
    '<div class="muted" style="font-weight:700;margin-bottom:6px">จำนวน</div>' +
    '<div style="display:flex;gap:10px;align-items:center">' +
      '<button class="btn o" id="eMinus" style="width:52px;height:52px;font-size:26px">−</button>' +
-     '<input class="inp" id="eInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" style="flex:1;min-width:0;font-size:26px;text-align:center;font-weight:700">' +
+     '<input class="inp" id="eInp" type="tel" inputmode="none" readonly pattern="[0-9]*" autocomplete="off" style="flex:1;min-width:0;font-size:26px;text-align:center;font-weight:700;cursor:pointer;caret-color:transparent">' +
      '<button class="btn o" id="ePlus" style="width:52px;height:52px;font-size:26px">+</button>' +
    '</div>' +
    '<button class="btn d" id="eDel" style="width:100%;margin-top:22px">ลบออกจากรายการ</button>' +
@@ -1277,7 +1273,20 @@ function setQty(u){
     close(); renderLines(); saveOpen();
   };
   inp.onkeydown = function(e){ if (e.key === 'Enter') $('eSave').onclick(); };
-  setTimeout(function(){ try { inp.focus(); inp.select(); } catch(e){} }, 60);
+  /* ค่าเริ่มต้น: ช่องตัวเลขล็อกไว้ (readonly) → ไม่เด้งคีย์บอร์ด ใช้ปุ่ม − / + ได้เลย
+     แตะที่ตัวเลขเท่านั้น ถึงจะปลดล็อกให้พิมพ์ (แป้นตัวเลข) · พอออกจากช่องจะล็อกกลับ */
+  inp.onclick = function(){
+    if (!inp.readOnly) return;
+    inp.readOnly = false;
+    inp.setAttribute('inputmode', 'numeric');
+    inp.style.caretColor = '';
+    try { inp.focus(); inp.select(); } catch(e){}
+  };
+  inp.onblur = function(){
+    inp.readOnly = true;
+    inp.setAttribute('inputmode', 'none');
+    inp.style.caretColor = 'transparent';
+  };
 }
 /* สลับกลับบ้าน — กดครั้งเดียวสลับทั้งจำนวนของบรรทัดนั้นทันที ไม่ถามจำนวน
    (ถ้าอยากแยกบางส่วนเป็นกลับบ้าน/ทานที่ร้าน ให้สั่งเมนูนั้นเพิ่มอีกบรรทัด แล้วค่อยสลับเฉพาะบรรทัดที่เพิ่ม) */
