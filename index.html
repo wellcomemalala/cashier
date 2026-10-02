@@ -1244,7 +1244,7 @@ function setQty(u){
    '<div class="muted" style="font-weight:700;margin-bottom:6px">จำนวน</div>' +
    '<div style="display:flex;gap:10px;align-items:center">' +
      '<button class="btn o" id="eMinus" style="width:52px;height:52px;font-size:26px">−</button>' +
-     '<input class="inp" id="eInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" style="flex:1;min-width:0;font-size:26px;text-align:center;font-weight:700">' +
+     '<input class="inp" id="eInp" type="tel" inputmode="none" readonly pattern="[0-9]*" autocomplete="off" style="flex:1;min-width:0;font-size:26px;text-align:center;font-weight:700;cursor:pointer;caret-color:transparent">' +
      '<button class="btn o" id="ePlus" style="width:52px;height:52px;font-size:26px">+</button>' +
    '</div>' +
    '<button class="btn d" id="eDel" style="width:100%;margin-top:22px">ลบออกจากรายการ</button>' +
@@ -1273,7 +1273,20 @@ function setQty(u){
     close(); renderLines(); saveOpen();
   };
   inp.onkeydown = function(e){ if (e.key === 'Enter') $('eSave').onclick(); };
-  setTimeout(function(){ try { inp.focus(); inp.select(); } catch(e){} }, 60);
+  /* ค่าเริ่มต้น: ช่องตัวเลขล็อกไว้ (readonly) → ไม่เด้งคีย์บอร์ด ใช้ปุ่ม − / + ได้เลย
+     แตะที่ตัวเลขเท่านั้น ถึงจะปลดล็อกให้พิมพ์ (แป้นตัวเลข) · พอออกจากช่องจะล็อกกลับ */
+  inp.onclick = function(){
+    if (!inp.readOnly) return;
+    inp.readOnly = false;
+    inp.setAttribute('inputmode', 'numeric');
+    inp.style.caretColor = '';
+    try { inp.focus(); inp.select(); } catch(e){}
+  };
+  inp.onblur = function(){
+    inp.readOnly = true;
+    inp.setAttribute('inputmode', 'none');
+    inp.style.caretColor = 'transparent';
+  };
 }
 /* สลับกลับบ้าน — กดครั้งเดียวสลับทั้งจำนวนของบรรทัดนั้นทันที ไม่ถามจำนวน
    (ถ้าอยากแยกบางส่วนเป็นกลับบ้าน/ทานที่ร้าน ให้สั่งเมนูนั้นเพิ่มอีกบรรทัด แล้วค่อยสลับเฉพาะบรรทัดที่เพิ่ม) */
