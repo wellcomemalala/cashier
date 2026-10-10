@@ -237,6 +237,7 @@ table.t td.r,table.t th.r{text-align:right}
   <div class="card" id="sumStaff"></div>
   <div class="card" id="sumItems"></div>
   <div class="card" id="sumBills"></div>
+  <div class="card" id="sumDeleted"></div>
 </div>
 
 <!-- ===== MY HISTORY ===== -->
@@ -421,7 +422,8 @@ function flushOutbox(){
   if (!a.length) { paintNetBar(); return; }
   FLUSHING = true;
   var rec = a[0];
-  rBills.child(rec.date).push(rec.bill).then(function(){
+  /* ใช้คีย์คงที่ (จาก _oid) แล้ว set แทน push — ถ้าส่งซ้ำเพราะเน็ตหลุดตอนรอยืนยัน บิลจะทับของเดิมที่คีย์เดียวกัน ไม่เกิดบิลซ้ำ */
+  rBills.child(rec.date).child(fbKeySafe(rec._oid)).set(rec.bill).then(function(){
     outboxDrop(rec._oid);
     db.ref(POS + '/lastClosed/' + rec.openKey).set(rec.bill.closedAt).catch(function(){});
     rOpen.child(rec.openKey).remove().catch(function(){});
@@ -1244,8 +1246,7 @@ function setQty(u){
    '<div class="muted" style="font-weight:700;margin-bottom:6px">จำนวน</div>' +
    '<div style="display:flex;gap:10px;align-items:center">' +
      '<button class="btn o" id="eMinus" style="width:52px;height:52px;font-size:26px">−</button>' +
-     '<div id="eShow" role="button" tabindex="0" aria-label="แตะเพื่อพิมพ์จำนวน" class="inp" style="flex:1;min-width:0;height:56px;box-sizing:border-box;font-size:26px;text-align:center;font-weight:700;line-height:32px;cursor:pointer;user-select:none;-webkit-user-select:none"></div>' +
-     '<input class="inp" id="eInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" style="display:none;flex:1;min-width:0;height:56px;box-sizing:border-box;font-size:26px;text-align:center;font-weight:700">' +
+     '<input class="inp" id="eInp" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="off" style="flex:1;min-width:0;font-size:26px;text-align:center;font-weight:700">' +
      '<button class="btn o" id="ePlus" style="width:52px;height:52px;font-size:26px">+</button>' +
    '</div>' +
    '<button class="btn d" id="eDel" style="width:100%;margin-top:22px">ลบออกจากรายการ</button>' +
@@ -1259,27 +1260,9 @@ function setQty(u){
   }
   function close(){ host.innerHTML = ''; }
   function find(){ var k = -1; CUR.lines.forEach(function(x, i){ if (x.uid === u) k = i; }); return k; }
-  var show = $('eShow');
-  function sync(){ show.textContent = inp.value === '' ? '0' : inp.value; }
-  sync();
-  inp.oninput = function(){ var v = inp.value.replace(/[^0-9]/g, ''); if (v !== inp.value) inp.value = v; sync(); };
-  $('eMinus').onclick = function(){ inp.value = String(Math.max(1, cur() - 1)); sync(); };
-  $('ePlus').onclick  = function(){ inp.value = String(Math.min(999, cur() + 1)); sync(); };
-  /* ค่าเริ่มต้น: โชว์ตัวเลขเฉย ๆ (ไม่มีช่องพิมพ์) → ไม่เด้งแป้นพิมพ์ ใช้ปุ่ม − / + ได้เลย
-     แตะที่ตัวเลขเท่านั้น ถึงจะสลับเป็นช่องพิมพ์ + เด้งแป้นตัวเลข · ออกจากช่องแล้วสลับกลับเป็นตัวเลขเฉย ๆ */
-  function openTyping(){
-    show.style.display = 'none';
-    inp.style.display = '';
-    try { inp.focus(); inp.select(); } catch(e){}
-  }
-  show.onclick = openTyping;
-  show.onkeydown = function(e){ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTyping(); } };
-  inp.onblur = function(){
-    var n = cur(); inp.value = n ? String(n) : '';
-    inp.style.display = 'none';
-    show.style.display = '';
-    sync();
-  };
+  inp.oninput = function(){ var v = inp.value.replace(/[^0-9]/g, ''); if (v !== inp.value) inp.value = v; };
+  $('eMinus').onclick = function(){ inp.value = String(Math.max(1, cur() - 1)); };
+  $('ePlus').onclick  = function(){ inp.value = String(Math.min(999, cur() + 1)); };
   $('eX').onclick = close;
   $('eSave').onclick = function(){
     var n = cur();
@@ -1292,6 +1275,8 @@ function setQty(u){
     close(); renderLines(); saveOpen();
   };
   inp.onkeydown = function(e){ if (e.key === 'Enter') $('eSave').onclick(); };
+  /* ไม่โฟกัสช่องตัวเลขอัตโนมัติ (กันแป้นพิมพ์เด้งบนมือถือ) — จะขึ้นก็ต่อเมื่อแตะที่ตัวเลขเอง */
+  inp.onfocus = function(){ try { inp.select(); } catch(e){} };
 }
 /* สลับกลับบ้าน — กดครั้งเดียวสลับทั้งจำนวนของบรรทัดนั้นทันที ไม่ถามจำนวน
    (ถ้าอยากแยกบางส่วนเป็นกลับบ้าน/ทานที่ร้าน ให้สั่งเมนูนั้นเพิ่มอีกบรรทัด แล้วค่อยสลับเฉพาะบรรทัดที่เพิ่ม) */
@@ -1505,8 +1490,11 @@ function loadCrossCheck(){
    ========================================================= */
 var PAY = { method:'เงินสด', received:0 };
 
+var CLOSING = {};   // บิลที่กำลังปิดอยู่ (รอ Firebase ตอบ) — กันกดปิดซ้ำตอนเน็ตค้าง
+var CLOSE_NO = {};  // เลขที่บิลที่ออกไปแล้วของการปิดครั้งนั้น — ลองใหม่แล้วใช้เลขเดิม
 function openPay(){
   if (!CUR) return;
+  if (CLOSING[CUR.key]) { toast('กำลังบันทึกบิลนี้อยู่ รอสักครู่ ห้ามกดซ้ำ'); return; }
   var t = totals();
   if (t.qty === 0) { toast('ยังไม่มีรายการในบิล'); return; }
   PAY = { method:'เงินสด', received:0 };
@@ -1552,6 +1540,7 @@ function openPay(){
 }
 
 function closeBill(t){
+  if (CUR && CLOSING[CUR.key]) { toast('กำลังบันทึกบิลนี้อยู่ รอสักครู่ ห้ามกดซ้ำ'); return; }
   clearTimeout(SAVE_T); // ไม่ให้บิลที่เพิ่งปิดถูกบันทึกกลับจากตัวหน่วงนับจาน
   var dateStr = localDateStr();
   var bill = {
@@ -1601,9 +1590,15 @@ function closeBill(t){
     return;
   }
 
-  rCount.child(dateStr).transaction(function(c){ return (c || 0) + 1; }, function(err, committed, snap){
-    bill.billNo = dateStr.replace(/-/g, '').slice(2) + '-' + pad2((snap && snap.val()) || 1);
-    rBills.child(dateStr).push(bill).then(function(){
+  /* กันบิลซ้ำตอนเน็ตค้าง:
+     1) CLOSING = ระหว่างรอ Firebase ตอบ กดชำระเงิน/ปิดบิลซ้ำไม่ได้
+     2) คีย์บิลคงที่ (จากโต๊ะ + เวลาเปิดบิล + ยอด) แล้ว set แทน push — ต่อให้ลองปิดใหม่ บิลจะทับของเดิม ไม่เพิ่มเป็นใบใหม่
+     3) เลขที่บิลจำไว้ ลองใหม่แล้วใช้เลขเดิม ไม่ไปเดินเลขเพิ่ม */
+  var closeId = fbKeySafe(openKey + '|' + CUR.openedAt + '|' + t.total);
+  CLOSING[openKey] = true;
+  toast('กำลังบันทึกบิล... ห้ามกดซ้ำ');
+  var finishClose = function(){
+    rBills.child(dateStr).child(closeId).set(bill).then(function(){
       var updates = {};
       updates[POS + '/open/' + openKey] = null;
       updates[POS + '/lastClosed/' + openKey] = bill.closedAt;
@@ -1611,9 +1606,19 @@ function closeBill(t){
       updates[BASE + 'billing_requests/' + openKey] = null;
       return db.ref().update(updates);
     }).then(function(){
+      delete CLOSING[openKey]; delete CLOSE_NO[closeId];
       CUR = null; showView('tables'); toast('ปิดบิลแล้ว ' + baht(bill.total));
       showReceipt(bill);
-    }).catch(function(e){ alert('บันทึกบิลไม่สำเร็จ: ' + e.message + '\nกรุณาลองใหม่'); });
+    }).catch(function(e){
+      delete CLOSING[openKey];
+      alert('บันทึกบิลไม่สำเร็จ: ' + e.message + '\nกรุณาลองใหม่');
+    });
+  };
+  if (CLOSE_NO[closeId]) { bill.billNo = CLOSE_NO[closeId]; finishClose(); return; }
+  rCount.child(dateStr).transaction(function(c){ return (c || 0) + 1; }, function(err, committed, snap){
+    bill.billNo = dateStr.replace(/-/g, '').slice(2) + '-' + pad2((snap && snap.val()) || 1);
+    CLOSE_NO[closeId] = bill.billNo;
+    finishClose();
   });
 }
 
@@ -1721,6 +1726,7 @@ function loadSummary(){
     SUM_BILLS = Object.keys(v).map(function(k){ var b = v[k]; b._k = k; return b; })
       .sort(function(a,b){ return String(a.closedAt).localeCompare(String(b.closedAt)); });
     renderSummary(d);
+    loadDeleted(d);
   }).catch(function(e){ $('sumKpis').innerHTML = '<div class="card">โหลดข้อมูลไม่สำเร็จ: ' + esc(e.message) + '</div>'; });
 }
 $('sumReload').onclick = loadSummary;
@@ -1868,9 +1874,43 @@ function renderSummary(d){
   $('sumItems').innerHTML = ih;
 
   var bh = '<h2>บิลทั้งหมด (' + d + ')</h2><table class="t"><tr><th>เลขที่</th><th>โต๊ะ</th><th>เวลา</th><th class="r">คน</th><th class="r">ยอด</th><th>จ่าย</th><th></th></tr>';
+  /* ไฮไลต์บิลที่น่าจะซ้ำ: โต๊ะเดียวกัน + ยอดเท่ากัน + ปิดห่างกันไม่เกิน 5 นาที (ไม่สนวิธีจ่าย)
+     ใบที่ปิดก่อนสุดของกลุ่ม = ใบแรก (ควรเก็บไว้), ใบที่เหลือ = น่าจะซ้ำ — เป็นแค่ตัวช่วยดู ไม่ลบอะไรให้เอง */
+  var DUP = {}, dupExtra = 0;
+  (function(){
+    var byKey = {};
+    b.forEach(function(x){
+      var g = String(x.table || '') + '|' + (Number(x.total) || 0);
+      (byKey[g] || (byKey[g] = [])).push(x);
+    });
+    Object.keys(byKey).forEach(function(g){
+      var arr = byKey[g].slice().sort(function(p, q){ return String(p.closedAt).localeCompare(String(q.closedAt)); });
+      var cluster = [];
+      function flush(){
+        if (cluster.length > 1) cluster.forEach(function(x, i){ DUP[x._k] = { no:i + 1, size:cluster.length }; });
+        if (cluster.length > 1) dupExtra += cluster.length - 1;
+        cluster = [];
+      }
+      arr.forEach(function(x){
+        if (cluster.length) {
+          var a = parseTs(cluster[cluster.length - 1].closedAt), c = parseTs(x.closedAt);
+          if (!a || !c || (c.getTime() - a.getTime()) > 5 * 60000) flush();
+        }
+        cluster.push(x);
+      });
+      flush();
+    });
+  })();
+  if (dupExtra > 0) {
+    bh = bh.replace('<table class="t">', '<div class="note">⚠️ พบบิลที่น่าจะซ้ำ <b>' + dupExtra + ' ใบ</b> (โต๊ะเดียวกัน ยอดเท่ากัน ปิดห่างกันไม่เกิน 5 นาที) — แถวสีเหลืองคือกลุ่มที่สงสัย ใบที่ปิดก่อนสุดคือ "ใบแรก" ควรเก็บไว้ ใบที่เหลือถ้าเป็นบิลซ้ำจริงให้กด 🗑 ลบ · ตรวจดูก่อนทุกครั้ง เพราะอาจเป็นลูกค้าสั่งยอดเท่ากันจริงก็ได้</div><table class="t">');
+  }
   b.slice().reverse().forEach(function(x){
-    bh += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + billTableHtml(x) + '</td><td>' + hhmm(x.closedAt) + '</td><td class="r">' + (x.guests||'-') + '</td><td class="r"><b>' + baht(x.total) + '</b></td><td>' + esc(x.method||'') + '</td>' +
-          '<td class="r"><button class="btn sm o" data-rc="' + esc(x._k) + '">ใบเสร็จ</button></td></tr>';
+    var dp = DUP[x._k];
+    var dpTag = dp ? (' <span class="tagaway" style="background:' + (dp.no === 1 ? '#0F6B5C' : '#C98A25') + '">' +
+                 (dp.no === 1 ? 'ใบแรก' : 'น่าจะซ้ำ') + ' ' + dp.no + '/' + dp.size + '</span>') : '';
+    bh += '<tr' + (dp ? ' style="background:#fff8e6"' : '') + '><td>' + esc(x.billNo || '-') + dpTag + '</td><td>' + billTableHtml(x) + '</td><td>' + hhmm(x.closedAt) + '</td><td class="r">' + (x.guests||'-') + '</td><td class="r"><b>' + baht(x.total) + '</b></td><td>' + esc(x.method||'') + '</td>' +
+          '<td class="r"><button class="btn sm o" data-rc="' + esc(x._k) + '">ใบเสร็จ</button> ' +
+          (UNLOCKED ? '<button class="btn sm d" data-delbill="' + esc(x._k) + '">🗑 ลบ</button>' : '') + '</td></tr>';
   });
   bh += '</table>';
   if (!b.length) bh = '<h2>บิลทั้งหมด</h2><div class="muted">วันนี้ยังไม่มีบิลที่ปิด</div>';
@@ -1881,6 +1921,114 @@ function renderSummary(d){
       if (f) showReceipt(f);
     };
   });
+  $('sumBills').querySelectorAll('[data-delbill]').forEach(function(btn){
+    btn.onclick = function(){ deleteClosedBill(d, btn.dataset.delbill); };
+  });
+}
+
+/* ---------- ลบบิลที่ปิดแล้ว (เฉพาะโหมดเจ้าของร้าน) ----------
+   ใช้ลบบิลซ้ำที่เกิดจากเน็ตค้างแล้วกดปิดบิลหลายครั้ง
+   - ก่อนลบจะสำเนาบิลเก็บไว้ที่ pos_cashier_v1/deletedBills/{วันที่}/ เพื่อตรวจสอบย้อนหลัง
+   - เขียนสำเนา + ลบบิลในคำสั่งเดียว (atomic) ถ้าไม่สำเร็จบิลจะไม่หาย
+   - ไม่แตะ lastClosed / สถานะโต๊ะ / บิลอื่น */
+function deleteClosedBill(dateStr, key){
+  if (!UNLOCKED) { toast('ต้องเปิดโหมดเจ้าของร้านก่อน'); return; }
+  if (!ONLINE) { toast('ต้องเชื่อมต่ออินเทอร์เน็ตก่อนลบบิล'); return; }
+  var bill = null;
+  SUM_BILLS.forEach(function(x){ if (x._k === key) bill = x; });
+  if (!bill) { toast('ไม่พบบิลนี้ ลองกดรีเฟรช'); return; }
+  var msg = 'ลบบิลนี้ถาวร?\n\nเลขที่ ' + (bill.billNo || '-') + '\nโต๊ะ ' + billTablePlain(bill) +
+    '\nเวลา ' + hhmm(bill.closedAt) + '\nยอด ' + baht(bill.total) + ' (' + (bill.method || '-') + ')' +
+    '\n\nยอดนี้จะหายออกจากสรุปยอดทันที (ระบบเก็บสำเนาไว้ตรวจสอบ)';
+  if (!confirm(msg)) return;
+  var reason = prompt('เหตุผลที่ลบ (ไม่ใส่ก็ได้)\nเช่น บิลซ้ำจากเน็ตค้าง', 'บิลซ้ำ');
+  if (reason === null) return;
+  var copy = {};
+  Object.keys(bill).forEach(function(f){ if (f !== '_k') copy[f] = bill[f]; });
+  copy.deletedAt = localStamp();
+  copy.deletedBy = STAFF || '';
+  copy.deleteReason = String(reason || '').slice(0, 120);
+  copy.origDate = dateStr;
+  copy.origKey = key;
+  var updates = {};
+  updates[POS + '/deletedBills/' + dateStr + '/' + key] = copy;
+  updates[POS + '/bills/' + dateStr + '/' + key] = null;
+  db.ref().update(updates).then(function(){
+    toast('ลบบิล ' + (bill.billNo || '') + ' แล้ว');
+    loadSummary();
+  }).catch(function(e){ toast('ลบไม่สำเร็จ: ' + e.message); });
+}
+
+/* ---------- รายการบิลที่ลบแล้ว + ปุ่มกู้คืน (เฉพาะโหมดเจ้าของร้าน) ---------- */
+var DEL_BILLS = [];
+function loadDeleted(d){
+  var box = $('sumDeleted'); if (!box) return;
+  db.ref(POS + '/deletedBills/' + d).once('value').then(function(s){
+    var v = s.val() || {};
+    DEL_BILLS = Object.keys(v).map(function(k){ var x = v[k] || {}; x._k = k; return x; })
+      .sort(function(a, b){ return String(b.deletedAt).localeCompare(String(a.deletedAt)); });
+    renderDeleted(d);
+  }).catch(function(e){
+    box.innerHTML = '<h2>บิลที่ลบแล้ว</h2><div class="muted">โหลดข้อมูลไม่สำเร็จ: ' + esc(e.message) + '</div>';
+  });
+}
+function renderDeleted(d){
+  var box = $('sumDeleted'); if (!box) return;
+  var h = '<h2>🗑 บิลที่ลบแล้ว (' + esc(d) + ')</h2>';
+  if (!DEL_BILLS.length) {
+    box.innerHTML = h + '<div class="muted">วันนี้ยังไม่มีบิลที่ถูกลบ</div>';
+    return;
+  }
+  var sum = 0; DEL_BILLS.forEach(function(x){ sum += Number(x.total) || 0; });
+  h += '<div class="muted" style="margin-bottom:8px">' + DEL_BILLS.length + ' ใบ · รวม ' + baht(sum) + ' (ไม่นับอยู่ในสรุปยอดด้านบน) · ลบผิดกด "กู้คืน" ได้</div>';
+  h += '<table class="t"><tr><th>เลขที่</th><th>โต๊ะ</th><th>เวลาปิด</th><th class="r">ยอด</th><th>จ่าย</th><th>ลบเมื่อ / โดย</th><th>เหตุผล</th><th></th></tr>';
+  DEL_BILLS.forEach(function(x){
+    h += '<tr><td>' + esc(x.billNo || '-') + '</td><td>' + billTableHtml(x) + '</td><td>' + hhmm(x.closedAt) + '</td>' +
+         '<td class="r"><b>' + baht(x.total) + '</b></td><td>' + esc(x.method || '') + '</td>' +
+         '<td>' + hhmm(x.deletedAt) + (x.deletedBy ? ' · ' + esc(x.deletedBy) : '') + '</td>' +
+         '<td>' + esc(x.deleteReason || '-') + '</td>' +
+         '<td class="r" style="white-space:nowrap"><button class="btn sm o" data-drc="' + esc(x._k) + '">ใบเสร็จ</button> ' +
+         '<button class="btn sm p" data-restore="' + esc(x._k) + '">↩ กู้คืน</button></td></tr>';
+  });
+  h += '</table>';
+  box.innerHTML = h;
+  box.querySelectorAll('[data-drc]').forEach(function(btn){
+    btn.onclick = function(){
+      var f = null; DEL_BILLS.forEach(function(x){ if (x._k === btn.dataset.drc) f = x; });
+      if (f) showReceipt(f);
+    };
+  });
+  box.querySelectorAll('[data-restore]').forEach(function(btn){
+    btn.onclick = function(){ restoreDeletedBill(d, btn.dataset.restore); };
+  });
+}
+/* กู้คืน = ย้ายบิลจาก deletedBills กลับไปที่ bills คีย์เดิม (เขียนกลับ + ลบสำเนาในคำสั่งเดียว) */
+function restoreDeletedBill(dateStr, key){
+  if (!UNLOCKED) { toast('ต้องเปิดโหมดเจ้าของร้านก่อน'); return; }
+  if (!ONLINE) { toast('ต้องเชื่อมต่ออินเทอร์เน็ตก่อนกู้คืนบิล'); return; }
+  var rec = null;
+  DEL_BILLS.forEach(function(x){ if (x._k === key) rec = x; });
+  if (!rec) { toast('ไม่พบบิลนี้ ลองกดรีเฟรช'); return; }
+  if (!confirm('กู้คืนบิลนี้กลับเข้าสรุปยอด?\n\nเลขที่ ' + (rec.billNo || '-') + '\nโต๊ะ ' + billTablePlain(rec) +
+      '\nยอด ' + baht(rec.total) + ' (' + (rec.method || '-') + ')')) return;
+  var origDate = rec.origDate || dateStr, origKey = rec.origKey || key;
+  var copy = {};
+  Object.keys(rec).forEach(function(f){
+    if (f === '_k' || f === 'deletedAt' || f === 'deletedBy' || f === 'deleteReason' || f === 'origDate' || f === 'origKey') return;
+    copy[f] = rec[f];
+  });
+  copy.restoredAt = localStamp();
+  copy.restoredBy = STAFF || '';
+  db.ref(POS + '/bills/' + origDate + '/' + origKey).once('value').then(function(s){
+    if (s.val()) throw new Error('มีบิลคีย์นี้อยู่ในสรุปยอดแล้ว');
+    var updates = {};
+    updates[POS + '/bills/' + origDate + '/' + origKey] = copy;
+    updates[POS + '/deletedBills/' + dateStr + '/' + key] = null;
+    return db.ref().update(updates);
+  }).then(function(){
+    toast('กู้คืนบิล ' + (rec.billNo || '') + ' แล้ว');
+    loadSummary();
+  }).catch(function(e){ toast('กู้คืนไม่สำเร็จ: ' + e.message); });
 }
 
 $('sumCsv').onclick = function(){
