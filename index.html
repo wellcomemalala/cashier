@@ -1275,7 +1275,8 @@ function setQty(u){
     close(); renderLines(); saveOpen();
   };
   inp.onkeydown = function(e){ if (e.key === 'Enter') $('eSave').onclick(); };
-  setTimeout(function(){ try { inp.focus(); inp.select(); } catch(e){} }, 60);
+  /* ไม่โฟกัสช่องตัวเลขอัตโนมัติ (กันแป้นพิมพ์เด้งบนมือถือ) — จะขึ้นก็ต่อเมื่อแตะที่ตัวเลขเอง */
+  inp.onfocus = function(){ try { inp.select(); } catch(e){} };
 }
 /* สลับกลับบ้าน — กดครั้งเดียวสลับทั้งจำนวนของบรรทัดนั้นทันที ไม่ถามจำนวน
    (ถ้าอยากแยกบางส่วนเป็นกลับบ้าน/ทานที่ร้าน ให้สั่งเมนูนั้นเพิ่มอีกบรรทัด แล้วค่อยสลับเฉพาะบรรทัดที่เพิ่ม) */
