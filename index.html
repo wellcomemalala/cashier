@@ -1416,12 +1416,33 @@ function loadCrossCheck(){
   var since = LASTC[CUR.key] || (localDateStr() + 'T00:00:00');
   if (CUR.openedAt && CUR.openedAt < since) since = CUR.openedAt;
   var rows = [];
+  /* ✅ FIX: รายการกลับบ้านต้องนับเฉพาะ "รอบปัจจุบัน" ของชื่อกลับบ้านนั้นๆ
+     เดิมใช้เวลาปิดบิลของโต๊ะ (LASTC['5']) ตัดรอบให้ทุกแถว ทำให้ "กลับบ้าน 5" ของลูกค้าคนก่อนๆ ที่ปิดบิลไปแล้ว
+     (LASTC['กลับบ้าน 5']) ถูกนับรวมมาทั้งวัน — ตอนนี้ตัดรอบด้วยเวลาปิดบิลของชื่อนั้นเอง เหมือน computeOrd()
+     และตัดชื่อที่เป็นบิลอื่นอยู่แล้ว (มีบิลของตัวเอง / ถูกรวมในบิลโต๊ะอื่น) ออก */
+  var linkedElsewhere = {}, linkedHere = {};
+  Object.keys(OPEN || {}).forEach(function(k){
+    var names = String((OPEN[k] || {}).linked || '').split(', ');
+    names.forEach(function(n){ if (!n) return; if (k === CUR.key) linkedHere[fbKeySafe(n)] = 1; else linkedElsewhere[fbKeySafe(n)] = 1; });
+  });
+  (CUR.linked || []).forEach(function(n){ if (n) linkedHere[fbKeySafe(n)] = 1; });
+  var todayStr = localDateStr();
+  function awayRowOk(o){
+    var ak = fbKeySafe(o.table);
+    if (linkedElsewhere[ak]) return false;                  // ถูกรวมเข้าบิลโต๊ะอื่นไปแล้ว
+    if (OPEN[ak] && !linkedHere[ak]) return false;          // มีบิลกลับบ้านของตัวเองเปิดอยู่ = คนละบิล
+    var ts = parseTs(o.timestamp);
+    if (!ts || localDateStr(ts) !== todayStr) return false; // นับเฉพาะวันนี้ (เหมือน computeOrd)
+    var lc = parseTs(LASTC[ak]);
+    if (lc && ts.getTime() <= lc.getTime()) return false;  // รอบก่อน ปิดบิลกลับบ้านนี้ไปแล้ว
+    return true;
+  }
   var p1 = db.ref(BASE + 'orders').once('value').then(function(s){
     var v = s.val() || {};
     Object.keys(v).forEach(function(k){
       var o = v[k] || {};
       var mk = xcMatchTable(o.table, table);
-      if (mk) rows.push({ item:o.item, qty:Number(o.quantity)||1, ts:o.timestamp, pending:true, kind:mk, rawTable:o.table });
+      if (mk && (mk === 'dine' || awayRowOk(o))) rows.push({ item:o.item, qty:Number(o.quantity)||1, ts:o.timestamp, pending:true, kind:mk, rawTable:o.table });
     });
   }).catch(function(){});
   var p2 = db.ref(BASE + 'completedOrders').orderByChild('timestamp').startAt(since).once('value').then(function(s){
@@ -1429,7 +1450,7 @@ function loadCrossCheck(){
     Object.keys(v).forEach(function(k){
       var o = v[k] || {};
       var mk2 = xcMatchTable(o.table, table);
-      if (mk2) rows.push({ item:o.item, qty:Number(o.quantity)||1, ts:o.timestamp, pending:false, kind:mk2, rawTable:o.table });
+      if (mk2 && (mk2 === 'dine' || awayRowOk(o))) rows.push({ item:o.item, qty:Number(o.quantity)||1, ts:o.timestamp, pending:false, kind:mk2, rawTable:o.table });
     });
   }).catch(function(){});
   Promise.all([p1, p2]).then(function(){
