@@ -1620,9 +1620,11 @@ function loadCrossCheck(){
     var ts = parseTs(o.timestamp);
     if (!ts || localDateStr(ts) !== todayStr) return false;
     var tk = fbKeySafe(matchedTable || o.table);
-    var lc = (tk === CUR.key && CUR.openedAt && (!LASTC[tk] || CUR.openedAt < LASTC[tk]))
-      ? parseTs(CUR.openedAt)
-      : parseTs(LASTC[tk]);
+    if (tk === CUR.key && CUR.openedAt && LASTC[tk] && CUR.openedAt < LASTC[tk]) {
+      var op = parseTs(CUR.openedAt);
+      return !op || ts.getTime() >= op.getTime();
+    }
+    var lc = parseTs(LASTC[tk]);
     if (lc && ts.getTime() <= lc.getTime()) return false;
     return true;
   }
