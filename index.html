@@ -1769,6 +1769,7 @@ function openPay(){
    '<div class="mask"><div class="modal">' +
    '<h3>ชำระเงิน — โต๊ะ ' + esc(CUR.table) + '</h3>' +
    '<div style="font-size:34px;font-weight:700;color:#0F6B5C;text-align:center;margin:4px 0 12px">' + baht(t.total) + '</div>' +
+    '<div style="text-align:center;margin:-6px 0 12px;padding:8px 12px;background:#FFF6E0;border:1px solid #F0D9A0;border-radius:10px;font-size:18px;font-weight:700;color:#8A5A00">⭐ ลูกค้าได้รับ <span style="font-size:24px;color:#C1533A">' + Math.floor((Number(t.total) || 0) / 50) + '</span> แต้ม <span style="font-size:13px;font-weight:600;color:#7a756e">(ทุก 50 บาท = 1 แต้ม)</span></div>' + // สะสมแต้ม: ทุก 50 บาท = 1 แต้ม ตัดเศษทิ้ง (แสดงผลอย่างเดียว)
    (t.away > 0 ? '<div class="muted" style="text-align:center;margin-bottom:10px">ทานที่ร้าน ' + baht(t.dine) + ' · 🏠 กลับบ้าน ' + baht(t.away) + '</div>' : '') +
    '<label class="fld">วิธีชำระ</label>' +
    '<div class="pm">' +
