@@ -1676,7 +1676,10 @@ function loadCrossCheck(){
       var G = groups[g], key = r.item || '-';
       G.agg[key] = (G.agg[key] || 0) + r.qty;
       G.q += r.qty;
-      G.amt += (Number(PRICES[r.item]) || 0) * r.qty;
+      /* ใช้ราคาจากเมนูของเครื่องเก็บเงิน (CAT) ก่อน ถ้าไม่เจอชื่อค่อยใช้ราคาของระบบออเดอร์ */
+      var catPrice = null;
+      CAT.forEach(function(c){ if (catPrice === null && c.name === r.item) catPrice = c.price; });
+      G.amt += (catPrice !== null ? catPrice : (Number(PRICES[r.item]) || 0)) * r.qty;
     });
     order.sort(function(a,b){ return a === '' ? -1 : (b === '' ? 1 : a.localeCompare(b)); });
 
